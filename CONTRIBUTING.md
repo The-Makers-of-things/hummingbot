@@ -1,138 +1,108 @@
-# Contributing
+# Contribution Guidelines
 
-## General workflow
+## General Workflow
 
-1. Fork the repo
-1. Create a new branch from the [`development`](https://github.com/CoinAlpha/hummingbot/tree/development) branch (see: [branch naming guidelines](#branch-naming-guidelines))
-1. Make commits to your branch
-1. When you've finished with your fix or feature:
-    - Rebase upstream changes into your branch
-    - Submit a pull request to the [`development`](https://github.com/CoinAlpha/hummingbot/tree/development) branch
-    - Include a description of your changes
-1. Your pull request will be reviewed by [CoinAlpha's development team](mailto:dev@coinalpha.com).
-1. Fix any issues raised by your code reviewer, and push your fixes as a single new commit.
-1. Once the pull request has been reviewed and accepted, it will be merged by a member of the CoinAlpha development team.
+1. Fork the `hummingbot/hummingbot` repository.
+2. Create a new branch from the `development` branch in your fork.
+3. Commit your changes to your branch.
+4. Once you've completed your fix, feature, connector, or documentation:
 
-## Detailed workflow
+   - Rebase upstream changes into your branch.
+   - Create a pull request to the `development` branch.
+   - Include a detailed description of your changes.
+   - Ensure to `allow edits by maintainers` before submitting the pull request.
 
-### Fork the repo
+5. Your code changes will be reviewed and tested by the Foundation QA team.
+6. Address any changes requested by your reviewer, fix issues raised, and push your fixes as a single new commit.
+7. Once the pull request has been reviewed and accepted, it will be merged by a member of the Hummingbot Foundation team.
 
-Use github’s interface to make a fork of the repo, then add that repo as an upstream remote:
+**Note:** Tests are crucial. If your pull request contains new, testable behavior, please submit tests. Refer to the 'Unit Test Coverage' section for more information.
 
-```
-git remote add upstream https://github.com/CoinAlpha/hummingbot.git
-```
+## Development Environment Setup
 
-### Branch naming guidelines
+### IDE Configuration
+If you're using VS Code or Cursor IDE, please refer to our [VS Code/Cursor Setup Guide](./CURSOR_VSCODE_SETUP.md) for detailed instructions on setting up your development environment, including:
+- VS Code/Cursor settings configuration
+- Debugging setup
+- Test discovery configuration
 
-Your branch should follow this naming convention:
-  - feat/...
-  - bug/...
-  - refactor/...
-  - test/...
-  - doc/...
+## Detailed Workflow
 
-These commands will help you do this:
+### 1. Fork the Repository
 
-``` bash
-# Creates your branch and brings you there
-git checkout -b `your-branch-name`
+Use GitHub's interface to fork the repo, add the Hummingbot repo as an upstream remote, and fetch upstream data:
+
+```bash
+git remote add upstream https://github.com/hummingbot/hummingbot.git
+git fetch upstream
 ```
 
-### Make commits to your feature branch
+### 2. Create Your Branch
 
-Prefix each commit like so
-  - (feat) Add a new feature
-  - (fix) Fix inconsistent tests [Fixes #0]
-  - (refactor) ...
-  - (cleanup) ...
-  - (test) ...
-  - (doc) ...
+Create your local branch following this naming convention:
 
-Make changes and commits on your branch, and make sure that you
-only make changes that are relevant to this branch. If you find
-yourself making unrelated changes, make a new branch for those
-changes.
+- feat/...
+- fix/...
+- refactor/...
+- doc/...
 
-#### Commit message guidelines
+Create and switch to a new local branch called feat/[branch_name] based on the development branch of the remote upstream:
 
-- Commit messages should be written in the present tense; e.g. "Fix continuous integration script".
-- The first line of your commit message should be a brief summary of what the commit changes. Aim for about 70 characters max. Remember: This is a summary, not a detailed description of everything that changed.
-- If you want to explain the commit in more depth, following the first line should be a blank line and then a more detailed description of the commit. This can be as detailed as you want, so dig into details here and keep the first line short.
+```bash
+git checkout -b feat/[branch_name] upstream/development
+```
 
-### Rebase upstream changes into your branch
+### 3. Commit Changes to Your Branch
 
-Once you are done making changes, you can begin the process of getting
-your code merged into the main repo. Step 1 is to rebase upstream
-changes to the `development` branch into yours by running this command
-from your branch:
+Make commits to your branch. Prefix each commit like so:
+
+- (feat) add a new feature
+- (fix) fix inconsistent tests
+- (refactor) ...
+- (cleanup) ...
+- (doc) ...
+
+Commit messages should be written in the present tense, e.g., "(feat) add unit tests". The first line of your commit message should be a summary of what the commit changes, aiming for about 70 characters max. If you want to explain the commit in more depth, provide a more detailed description after a blank line following the first line.
+
+### 4. Rebase Upstream Changes
+
+Rebase upstream changes to the development branch into yours by running this command from your branch:
 
 ```bash
 git pull --rebase upstream development
 ```
 
-This will start the rebase process. You must commit all of your changes
-before doing this. If there are no conflicts, this should just roll all
-of your changes back on top of the changes from upstream, leading to a
-nice, clean, linear commit history.
-
-If there are conflicting changes, git will start yelling at you part way
-through the rebasing process. Git will pause rebasing to allow you to sort
-out the conflicts. You do this the same way you solve merge conflicts,
-by checking all of the files git says have been changed in both histories
-and picking the versions you want. Be aware that these changes will show
-up in your pull request, so try and incorporate upstream changes as much
-as possible.
-
-You pick a file by `git add`ing it - you do not make commits during a
-rebase.
-
-Once you are done fixing conflicts for a specific commit, run:
+If there are conflicting changes, git will pause rebasing to allow you to sort out the conflicts. Once you are done fixing conflicts for a specific commit, run:
 
 ```bash
 git rebase --continue
 ```
 
-This will continue the rebasing process. Once you are done fixing all
-conflicts you should run the existing tests to make sure you didn’t break
-anything, then run your new tests (there are new tests, right?) and
-make sure they work also.
+Ensure all tests pass after rebasing.
 
-If rebasing broke anything, fix it, then repeat the above process until
-you get here again and nothing is broken and all the tests pass.
+### 5. Create a Pull Request
 
-### Make a pull request
+Create a clear pull request from your fork and branch to the upstream `development` branch, detailing your changes. Check 'Allow edits by maintainers' for the Foundation team to update your branch with development whenever needed.
 
-Make a clear pull request from your fork and branch to the upstream `development`
-branch, detailing exactly what changes you made and what feature this
-should add. The clearer your pull request is the faster you can get
-your changes incorporated into this repo.
+If the Foundation team requests changes, make more commits to your branch to address these, then follow this process again from rebasing onwards. Once you've addressed the requests, request further review.
 
-If the development team requests changes, you should make more commits to your
-branch to address these, then follow this process again from rebasing onwards.
+## Unit Test Coverage
 
-Once you get back here, make a comment requesting further review and
-someone will look at your code again. If it addresses the requests, it will
-get merged, else, just repeat again.
+A minimum of 80% unit test coverage is required for all changes included in a pull request. However, some components, like UI components, are excluded from this validation.
 
-Thanks for contributing!
+To run tests locally, run `make test` after activating the environment.
 
-### Testing
+To calculate the diff-coverage locally on your computer, run `make development-diff-cover` after running all tests.
 
-Tests are very, very important. Submit tests if your pull request contains new, testable behavior.
+## Checklist
 
-## Checklist:
+- Did I create my branch from `development` (don't create new branches from existing feature branches)?
+- Did I follow the correct naming convention for my branch?
+- Is my branch focused on a single main change?
+- Do all of my changes directly relate to this change?
+- Did I rebase the upstream development branch after I finished all my work?
+- Did I write a clear pull request message detailing what changes I made?
+- Did I get a code review?
+- Did I make any requested changes from that code review?
 
-This is just to help you organize your process
-
-- [ ] Did I create my branch from `development` (don't create new branches from existing feature branches)?
-- [ ] Did I follow the correct naming convention for my branch?
-- [ ] Is my branch focused on a single main change?
-  - [ ] Do all of my changes directly relate to this change?
-- [ ] Did I rebase the upstream `development` branch after I finished all my
-  work?
-- [ ] Did I write a clear pull request message detailing what changes I made?
-- [ ] Did I get a code review?
-  - [ ] Did I make any requested changes from that code review?
-
-If you follow all of these guidelines and make good changes, you should have no problem getting your changes merged in.
+If you adhere to these guidelines and make quality changes, you should have no problems getting your contributions accepted. Thank you for contributing!

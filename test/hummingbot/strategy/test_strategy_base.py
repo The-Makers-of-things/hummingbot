@@ -1,42 +1,33 @@
-#!/usr/bin/env python
-import unittest
-import unittest.mock
 import asyncio
 import logging
 import time
-
+import unittest
+import unittest.mock
 from datetime import datetime
 from decimal import Decimal
-from typing import (
-    Any,
-    Dict,
-    List,
-    Union,
-    Tuple,
-)
+from typing import Any, Dict, List, Tuple, Union
+
+from hummingbot.client.config.client_config_map import ClientConfigMap
+from hummingbot.client.config.config_helpers import ClientConfigAdapter
 from hummingbot.client.hummingbot_application import HummingbotApplication
+from hummingbot.connector.exchange.paper_trade.paper_trade_exchange import QuantizationParams
+from hummingbot.connector.in_flight_order_base import InFlightOrderBase
+from hummingbot.connector.test_support.mock_paper_exchange import MockPaperExchange
+from hummingbot.core.data_type.common import OrderType, TradeType
 from hummingbot.core.data_type.limit_order import LimitOrder
 from hummingbot.core.data_type.market_order import MarketOrder
-from hummingbot.core.event.events import (
-    MarketEvent,
-    OrderType,
-    TradeType,
-    OrderFilledEvent,
-)
+from hummingbot.core.event.events import MarketEvent, OrderFilledEvent
 from hummingbot.strategy.market_trading_pair_tuple import MarketTradingPairTuple
 from hummingbot.strategy.order_tracker import OrderTracker
 from hummingbot.strategy.strategy_base import StrategyBase
-from hummingbot.connector.in_flight_order_base import InFlightOrderBase
-from hummingbot.connector.exchange.paper_trade.paper_trade_exchange import QuantizationParams
-from test.mock.mock_paper_exchange import MockPaperExchange
 
 ms_logger = None
 
 
 class ExtendedMockPaperExchange(MockPaperExchange):
 
-    def __init__(self):
-        super().__init__()
+    def __init__(self, client_config_map: "ClientConfigAdapter"):
+        super().__init__(client_config_map)
 
         self._in_flight_orders = {}
 
@@ -72,7 +63,9 @@ class StrategyBaseUnitTests(unittest.TestCase):
         cls.trading_pair = "COINALPHA-HBOT"
 
     def setUp(self):
-        self.market: ExtendedMockPaperExchange = ExtendedMockPaperExchange()
+        self.market: ExtendedMockPaperExchange = ExtendedMockPaperExchange(
+            client_config_map=ClientConfigAdapter(ClientConfigMap())
+        )
         self.market_info: MarketTradingPairTuple = MarketTradingPairTuple(
             self.market, self.trading_pair, *self.trading_pair.split("-")
         )
@@ -92,6 +85,7 @@ class StrategyBaseUnitTests(unittest.TestCase):
 
         self.strategy: StrategyBase = MockStrategy()
         self.strategy.add_markets([self.market])
+        self.strategy.order_tracker._set_current_timestamp(1640001112.223)
 
     @staticmethod
     def simulate_order_filled(market_info: MarketTradingPairTuple, order: Union[LimitOrder, MarketOrder]):
@@ -99,7 +93,7 @@ class StrategyBaseUnitTests(unittest.TestCase):
         market_info.market.trigger_event(
             MarketEvent.OrderFilled,
             OrderFilledEvent(
-                int(time.time() * 1e3),
+                time.time(),
                 order.client_order_id if isinstance(order, LimitOrder) else order.order_id,
                 order.trading_pair,
                 TradeType.BUY if order.is_buy else TradeType.SELL,
@@ -135,7 +129,9 @@ class StrategyBaseUnitTests(unittest.TestCase):
 
         self.assertEqual(1, len(self.strategy.active_markets))
 
-        new_market: MockPaperExchange = MockPaperExchange()
+        new_market: MockPaperExchange = MockPaperExchange(
+            client_config_map=ClientConfigAdapter(ClientConfigMap())
+        )
         self.strategy.add_markets([new_market])
 
         self.assertEqual(2, len(self.strategy.active_markets))
@@ -388,8 +384,9 @@ class StrategyBaseUnitTests(unittest.TestCase):
                 trading_pair=self.trading_pair,
                 order_type=OrderType.LIMIT,
                 trade_type=TradeType.BUY,
-                price=Decimal(f"{i+1}"),
-                amount=Decimal(f"{10 * (i+1)}"),
+                price=Decimal(f"{i + 1}"),
+                amount=Decimal(f"{10 * (i + 1)}"),
+                creation_timestamp=1640001112.0,
                 initial_state="OPEN"
             )
             for i in range(10)
@@ -402,44 +399,31 @@ class StrategyBaseUnitTests(unittest.TestCase):
     @unittest.mock.patch('hummingbot.client.hummingbot_application.HummingbotApplication.main_application')
     @unittest.mock.patch('hummingbot.client.hummingbot_application.HummingbotCLI')
     def test_notify_hb_app(self, cli_class_mock, main_application_function_mock):
-        messages = []
         cli_logs = []
 
         cli_instance = cli_class_mock.return_value
         cli_instance.log.side_effect = lambda message: cli_logs.append(message)
 
-        notifier_mock = unittest.mock.MagicMock()
-        notifier_mock.add_msg_to_queue.side_effect = lambda message: messages.append(message)
-
         hummingbot_application = HummingbotApplication()
-        hummingbot_application.notifiers.append(notifier_mock)
         main_application_function_mock.return_value = hummingbot_application
 
         self.strategy.notify_hb_app("Test message")
 
         self.assertIn("Test message", cli_logs)
-        self.assertIn("Test message", messages)
 
     @unittest.mock.patch('hummingbot.client.hummingbot_application.HummingbotApplication.main_application')
     @unittest.mock.patch('hummingbot.client.hummingbot_application.HummingbotCLI')
     def test_notify_hb_app_with_timestamp(self, cli_class_mock, main_application_function_mock):
-        messages = []
         cli_logs = []
 
         cli_instance = cli_class_mock.return_value
         cli_instance.log.side_effect = lambda message: cli_logs.append(message)
 
-        notifier_mock = unittest.mock.MagicMock()
-        notifier_mock.add_msg_to_queue.side_effect = lambda message: messages.append(message)
-
         hummingbot_application = HummingbotApplication()
-        hummingbot_application.notifiers.append(notifier_mock)
         main_application_function_mock.return_value = hummingbot_application
 
         time_of_tick = datetime(year=2021, month=6, day=17, hour=0, minute=0, second=0, microsecond=0)
 
         self.strategy.tick(time_of_tick.timestamp())
         self.strategy.notify_hb_app_with_timestamp("Test message")
-
         self.assertIn("(2021-06-17 00:00:00) Test message", cli_logs)
-        self.assertIn("(2021-06-17 00:00:00) Test message", messages)

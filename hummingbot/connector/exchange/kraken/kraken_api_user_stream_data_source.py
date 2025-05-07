@@ -1,155 +1,98 @@
-#!/usr/bin/env python
-
 import asyncio
-import logging
-from typing import (
-    AsyncIterable,
-    Dict,
-    Optional,
-    Any
-)
-import time
+from typing import TYPE_CHECKING, Any, Dict, Optional
 
-import aiohttp
-import ujson
-import websockets
-
-from hummingbot.core.api_throttler.async_throttler import AsyncThrottler
-from hummingbot.core.data_type.user_stream_tracker_data_source import UserStreamTrackerDataSource
-from hummingbot.logger import HummingbotLogger
-from hummingbot.connector.exchange.kraken.kraken_auth import KrakenAuth
-from hummingbot.connector.exchange.kraken.kraken_order_book import KrakenOrderBook
 from hummingbot.connector.exchange.kraken import kraken_constants as CONSTANTS
+from hummingbot.core.data_type.user_stream_tracker_data_source import UserStreamTrackerDataSource
+from hummingbot.core.web_assistant.connections.data_types import WSJSONRequest
+from hummingbot.core.web_assistant.web_assistants_factory import WebAssistantsFactory
+from hummingbot.core.web_assistant.ws_assistant import WSAssistant
+from hummingbot.logger import HummingbotLogger
 
-MESSAGE_TIMEOUT = 3.0
-PING_TIMEOUT = 5.0
+if TYPE_CHECKING:
+    from hummingbot.connector.exchange.kraken.kraken_exchange import KrakenExchange
 
 
 class KrakenAPIUserStreamDataSource(UserStreamTrackerDataSource):
+    _logger: Optional[HummingbotLogger] = None
 
-    _krausds_logger: Optional[HummingbotLogger] = None
+    def __init__(self,
+                 connector: 'KrakenExchange',
+                 api_factory: Optional[WebAssistantsFactory] = None):
 
-    @classmethod
-    def logger(cls) -> HummingbotLogger:
-        if cls._krausds_logger is None:
-            cls._krausds_logger = logging.getLogger(__name__)
-        return cls._krausds_logger
-
-    def __init__(self, throttler: AsyncThrottler, kraken_auth: KrakenAuth):
-        self._throttler = throttler
-        self._kraken_auth: KrakenAuth = kraken_auth
-        self._shared_client: Optional[aiohttp.ClientSession] = None
-        self._current_auth_token: Optional[str] = None
-        self._last_recv_time: float = 0
         super().__init__()
+        self._api_factory = api_factory
+        self._connector = connector
+        self._current_auth_token: Optional[str] = None
 
-    @property
-    def order_book_class(self):
-        return KrakenOrderBook
+    async def _connected_websocket_assistant(self) -> WSAssistant:
+        ws: WSAssistant = await self._api_factory.get_ws_assistant()
+        await ws.connect(ws_url=CONSTANTS.WS_AUTH_URL, ping_timeout=CONSTANTS.PING_TIMEOUT)
+        return ws
 
     @property
     def last_recv_time(self):
-        return self._last_recv_time
+        if self._ws_assistant is None:
+            return 0
+        else:
+            return self._ws_assistant.last_recv_time
 
     async def get_auth_token(self) -> str:
-        api_auth: Dict[str, Any] = self._kraken_auth.generate_auth_dict(uri=CONSTANTS.GET_TOKEN_PATH_URL)
-
-        url = f"{CONSTANTS.BASE_URL}{CONSTANTS.GET_TOKEN_PATH_URL}"
-
-        client: aiohttp.ClientSession = await self._http_client()
-
-        response_coro = client.request(
-            method="POST",
-            url=url,
-            headers=api_auth["headers"],
-            data=api_auth["postDict"],
-            timeout=100
-        )
-
-        async with self._throttler.execute_task(CONSTANTS.GET_TOKEN_PATH_URL):
-            async with response_coro as response:
-                if response.status != 200:
-                    raise IOError(f"Error fetching Kraken user stream listen key. HTTP status is {response.status}.")
-
-                try:
-                    response_json: Dict[str, Any] = await response.json()
-                except Exception:
-                    raise IOError(f"Error parsing data from {url}.")
-
-                err = response_json["error"]
-                if "EAPI:Invalid nonce" in err:
-                    self.logger().error(f"Invalid nonce error from {url}. " +
-                                        "Please ensure your Kraken API key nonce window is at least 10, " +
-                                        "and if needed reset your API key.")
-                    raise IOError({"error": response_json})
-
-                return response_json["result"]["token"]
-
-    async def listen_for_user_stream(self, ev_loop: asyncio.AbstractEventLoop, output: asyncio.Queue):
-        ws = None
-        while True:
-            try:
-                async with self._throttler.execute_task(CONSTANTS.WS_CONNECTION_LIMIT_ID):
-                    ws = await websockets.connect(CONSTANTS.WS_AUTH_URL)
-                    if self._current_auth_token is None:
-                        self._current_auth_token = await self.get_auth_token()
-
-                    for subscription_type in ["openOrders", "ownTrades"]:
-                        subscribe_request: Dict[str, Any] = {
-                            "event": "subscribe",
-                            "subscription": {
-                                "name": subscription_type,
-                                "token": self._current_auth_token
-                            }
-                        }
-                        await ws.send(ujson.dumps(subscribe_request))
-
-                    async for raw_msg in self._inner_messages(ws):
-                        self._last_recv_time = time.time()
-
-                        diff_msg = ujson.loads(raw_msg)
-                        output.put_nowait(diff_msg)
-            except asyncio.CancelledError:
-                raise
-            except Exception:
-                self.logger().error("Unexpected error with Kraken WebSocket connection. "
-                                    "Retrying after 30 seconds...", exc_info=True)
-                self._current_auth_token = None
-                await asyncio.sleep(30.0)
-            finally:
-                if ws is not None:
-                    await ws.close()
-
-    async def _http_client(self) -> aiohttp.ClientSession:
-        if self._shared_client is None or self._shared_client.closed:
-            self._shared_client = aiohttp.ClientSession()
-        return self._shared_client
-
-    async def _inner_messages(self,
-                              ws: websockets.WebSocketClientProtocol) -> AsyncIterable[str]:
-        """
-        Generator function that returns messages from the web socket stream
-        :param ws: current web socket connection
-        :returns: message in AsyncIterable format
-        """
-        # Terminate the recv() loop as soon as the next message timed out, so the outer loop can reconnect.
         try:
-            while True:
-                try:
-                    msg: str = await asyncio.wait_for(ws.recv(), timeout=MESSAGE_TIMEOUT)
-                    if (("heartbeat" not in msg and
-                         "systemStatus" not in msg and
-                         "subscriptionStatus" not in msg)):
-                        yield msg
-                except asyncio.TimeoutError:
-                    pong_waiter = await ws.ping()
-                    await asyncio.wait_for(pong_waiter, timeout=PING_TIMEOUT)
-        except asyncio.TimeoutError:
-            self.logger().warning("WebSocket ping timed out. Going to reconnect...")
-            return
-        finally:
-            await ws.close()
+            response_json = await self._connector._api_post(path_url=CONSTANTS.GET_TOKEN_PATH_URL, params={},
+                                                            is_auth_required=True)
+        except Exception:
+            raise
+        return response_json["token"]
 
-    async def stop(self):
-        if self._shared_client is not None and not self._shared_client.closed:
-            await self._shared_client.close()
+    async def _subscribe_channels(self, websocket_assistant: WSAssistant):
+        """
+        Subscribes to order events and balance events.
+
+        :param websocket_assistant: the websocket assistant used to connect to the exchange
+        """
+        try:
+
+            if self._current_auth_token is None:
+                self._current_auth_token = await self.get_auth_token()
+
+            orders_change_payload = {
+                "event": "subscribe",
+                "subscription": {
+                    "name": "openOrders",
+                    "token": self._current_auth_token
+                }
+            }
+            subscribe_order_change_request: WSJSONRequest = WSJSONRequest(payload=orders_change_payload)
+
+            trades_payload = {
+                "event": "subscribe",
+                "subscription": {
+                    "name": "ownTrades",
+                    "token": self._current_auth_token
+                }
+            }
+            subscribe_trades_request: WSJSONRequest = WSJSONRequest(payload=trades_payload)
+
+            await websocket_assistant.send(subscribe_order_change_request)
+            await websocket_assistant.send(subscribe_trades_request)
+
+            self.logger().info("Subscribed to private order changes and trades updates channels...")
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            self.logger().exception("Unexpected error occurred subscribing to user streams...")
+            raise
+
+    async def _process_event_message(self, event_message: Dict[str, Any], queue: asyncio.Queue):
+        if type(event_message) is list and event_message[-2] in [
+            CONSTANTS.USER_TRADES_ENDPOINT_NAME,
+            CONSTANTS.USER_ORDERS_ENDPOINT_NAME,
+        ]:
+            queue.put_nowait(event_message)
+        else:
+            if event_message.get("errorMessage") is not None:
+                err_msg = event_message.get("errorMessage")
+                raise IOError({
+                    "label": "WSS_ERROR",
+                    "message": f"Error received via websocket - {err_msg}."
+                })
