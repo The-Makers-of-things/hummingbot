@@ -1,23 +1,24 @@
-from typing import (
-    List,
-    Tuple,
-)
+from decimal import Decimal
+from typing import List, Optional, Tuple
 
-from hummingbot.client.hummingbot_application import HummingbotApplication
-from hummingbot.strategy.market_trading_pair_tuple import MarketTradingPairTuple
-from hummingbot.strategy.order_book_asset_price_delegate import OrderBookAssetPriceDelegate
-from hummingbot.strategy.api_asset_price_delegate import APIAssetPriceDelegate
-from hummingbot.strategy.pure_market_making import (
-    PureMarketMakingStrategy,
-    InventoryCostPriceDelegate,
-)
-from hummingbot.strategy.pure_market_making.pure_market_making_config_map import pure_market_making_config_map as c_map
 from hummingbot.connector.exchange.paper_trade import create_paper_trade_market
 from hummingbot.connector.exchange_base import ExchangeBase
-from decimal import Decimal
+from hummingbot.strategy.api_asset_price_delegate import APIAssetPriceDelegate
+from hummingbot.strategy.market_trading_pair_tuple import MarketTradingPairTuple
+from hummingbot.strategy.order_book_asset_price_delegate import OrderBookAssetPriceDelegate
+from hummingbot.strategy.pure_market_making import InventoryCostPriceDelegate, PureMarketMakingStrategy
+from hummingbot.strategy.pure_market_making.moving_price_band import MovingPriceBand
+from hummingbot.strategy.pure_market_making.pure_market_making_config_map import pure_market_making_config_map as c_map
 
 
-def start(self):
+async def start(self):
+    def convert_decimal_string_to_list(string: Optional[str], divisor: Decimal = Decimal("1")) -> List[Decimal]:
+        '''convert order level spread string into a list of decimal divided by divisor '''
+        if string is None:
+            return []
+        string_list = list(string.split(","))
+        return [Decimal(v) / divisor for v in string_list]
+
     try:
         order_amount = c_map.get("order_amount").value
         order_refresh_time = c_map.get("order_refresh_time").value
@@ -52,27 +53,47 @@ def start(self):
         custom_api_update_interval = c_map.get("custom_api_update_interval").value
         order_refresh_tolerance_pct = c_map.get("order_refresh_tolerance_pct").value / Decimal('100')
         order_override = c_map.get("order_override").value
-
+        split_order_levels_enabled = c_map.get("split_order_levels_enabled").value
+        moving_price_band = MovingPriceBand(
+            enabled=c_map.get("moving_price_band_enabled").value,
+            price_floor_pct=c_map.get("price_floor_pct").value,
+            price_ceiling_pct=c_map.get("price_ceiling_pct").value,
+            price_band_refresh_time=c_map.get("price_band_refresh_time").value
+        )
+        bid_order_level_spreads = convert_decimal_string_to_list(
+            c_map.get("bid_order_level_spreads").value)
+        ask_order_level_spreads = convert_decimal_string_to_list(
+            c_map.get("ask_order_level_spreads").value)
+        bid_order_level_amounts = convert_decimal_string_to_list(
+            c_map.get("bid_order_level_amounts").value)
+        ask_order_level_amounts = convert_decimal_string_to_list(
+            c_map.get("ask_order_level_amounts").value)
+        if split_order_levels_enabled:
+            buy_list = [['buy', spread, amount] for spread, amount in zip(bid_order_level_spreads, bid_order_level_amounts)]
+            sell_list = [['sell', spread, amount] for spread, amount in zip(ask_order_level_spreads, ask_order_level_amounts)]
+            both_list = buy_list + sell_list
+            order_override = {
+                f'split_level_{i}': order for i, order in enumerate(both_list)
+            }
         trading_pair: str = raw_trading_pair
-        maker_assets: Tuple[str, str] = self._initialize_market_assets(exchange, [trading_pair])[0]
+        maker_assets: Tuple[str, str] = trading_pair.split("-")
         market_names: List[Tuple[str, List[str]]] = [(exchange, [trading_pair])]
-        self._initialize_markets(market_names)
-        maker_data = [self.markets[exchange], trading_pair] + list(maker_assets)
+        await self.initialize_markets(market_names)
+        maker_data = [self.connector_manager.connectors[exchange], trading_pair] + list(maker_assets)
         self.market_trading_pair_tuples = [MarketTradingPairTuple(*maker_data)]
 
         asset_price_delegate = None
         if price_source == "external_market":
             asset_trading_pair: str = price_source_market
             ext_market = create_paper_trade_market(price_source_exchange, [asset_trading_pair])
-            self.markets[price_source_exchange]: ExchangeBase = ext_market
+            self.connector_manager.connectors[price_source_exchange]: ExchangeBase = ext_market
             asset_price_delegate = OrderBookAssetPriceDelegate(ext_market, asset_trading_pair)
         elif price_source == "custom_api":
-            ext_market = create_paper_trade_market(exchange, [raw_trading_pair])
-            asset_price_delegate = APIAssetPriceDelegate(ext_market, price_source_custom_api,
+            asset_price_delegate = APIAssetPriceDelegate(self.markets[exchange], price_source_custom_api,
                                                          custom_api_update_interval)
         inventory_cost_price_delegate = None
         if price_type == "inventory_cost":
-            db = HummingbotApplication.main_application().trade_fill_db
+            db = self.trade_fill_db
             inventory_cost_price_delegate = InventoryCostPriceDelegate(db, trading_pair)
         take_if_crossed = c_map.get("take_if_crossed").value
 
@@ -112,8 +133,12 @@ def start(self):
             minimum_spread=minimum_spread,
             hb_app_notification=True,
             order_override={} if order_override is None else order_override,
+            split_order_levels_enabled=split_order_levels_enabled,
+            bid_order_level_spreads=bid_order_level_spreads,
+            ask_order_level_spreads=ask_order_level_spreads,
             should_wait_order_cancel_confirmation=should_wait_order_cancel_confirmation,
+            moving_price_band=moving_price_band
         )
     except Exception as e:
-        self._notify(str(e))
+        self.notify(str(e))
         self.logger().error("Unknown error during initialization.", exc_info=True)

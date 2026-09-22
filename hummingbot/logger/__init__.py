@@ -1,14 +1,8 @@
+import dataclasses
 import logging
 from decimal import Decimal
 from enum import Enum
-from logging import (
-    DEBUG,
-    INFO,
-    WARNING,
-    ERROR,
-    CRITICAL
-)
-
+from logging import CRITICAL, DEBUG, ERROR, INFO, WARNING
 
 from .logger import HummingbotLogger
 
@@ -20,6 +14,8 @@ def log_encoder(obj):
         return str(obj)
     elif isinstance(obj, Enum):
         return str(obj)
+    elif dataclasses.is_dataclass(obj):
+        return dataclasses.asdict(obj)
     raise TypeError("Object of type '%s' is not JSON serializable" % type(obj).__name__)
 
 

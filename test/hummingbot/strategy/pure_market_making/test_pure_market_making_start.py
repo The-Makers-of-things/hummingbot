@@ -1,22 +1,30 @@
-from decimal import Decimal
 import unittest.mock
-import hummingbot.strategy.pure_market_making.start as strategy_start
-from hummingbot.connector.exchange_base import ExchangeBase
-from hummingbot.strategy.pure_market_making.pure_market_making_config_map import (
-    pure_market_making_config_map as c_map
-)
-from hummingbot.core.event.events import PriceType
+from decimal import Decimal
 from test.hummingbot.strategy import assign_config_default
+from test.isolated_asyncio_wrapper_test_case import IsolatedAsyncioWrapperTestCase
+
+import hummingbot.strategy.pure_market_making.start as strategy_start
+from hummingbot.client.config.client_config_map import ClientConfigMap
+from hummingbot.client.config.config_helpers import ClientConfigAdapter
+from hummingbot.connector.exchange_base import ExchangeBase
+from hummingbot.core.data_type.common import PriceType
+from hummingbot.strategy.pure_market_making.pure_market_making_config_map import pure_market_making_config_map as c_map
 
 
-class PureMarketMakingStartTest(unittest.TestCase):
+class PureMarketMakingStartTest(IsolatedAsyncioWrapperTestCase):
 
     def setUp(self) -> None:
         super().setUp()
         self.strategy = None
+        self.client_config_map = ClientConfigAdapter(ClientConfigMap())
         self.markets = {"binance": ExchangeBase()}
         self.notifications = []
         self.log_errors = []
+        # Add missing attributes needed by PMM start.py
+        self.connector_manager = unittest.mock.MagicMock()
+        self.connector_manager.connectors = self.markets
+        self.trade_fill_db = None
+        self.market_trading_pair_tuples = []
         assign_config_default(c_map)
         c_map.get("exchange").value = "binance"
         c_map.get("market").value = "ETH-USDT"
@@ -45,19 +53,24 @@ class PureMarketMakingStartTest(unittest.TestCase):
         c_map.get("add_transaction_costs").value = False
         c_map.get("price_source").value = "external_market"
         c_map.get("price_type").value = "best_bid"
-        c_map.get("price_source_exchange").value = "ascend_ex"
+        c_map.get("price_source_exchange").value = "kucoin"
         c_map.get("price_source_market").value = "ETH-DAI"
         c_map.get("price_source_custom_api").value = "localhost.test"
         c_map.get("order_refresh_tolerance_pct").value = Decimal("2")
         c_map.get("order_override").value = None
+        c_map.get("split_order_levels_enabled").value = True
+        c_map.get("bid_order_level_spreads").value = "1,2"
+        c_map.get("ask_order_level_spreads").value = "1,2"
+        c_map.get("bid_order_level_amounts").value = "1,2"
+        c_map.get("ask_order_level_amounts").value = None
 
     def _initialize_market_assets(self, market, trading_pairs):
         return [("ETH", "USDT")]
 
-    def _initialize_markets(self, market_names):
+    async def initialize_markets(self, market_names):
         pass
 
-    def _notify(self, message):
+    def notify(self, message):
         self.notifications.append(message)
 
     def logger(self):
@@ -66,8 +79,9 @@ class PureMarketMakingStartTest(unittest.TestCase):
     def error(self, message, exc_info):
         self.log_errors.append(message)
 
-    def test_strategy_creation(self):
-        strategy_start.start(self)
+    # @patch.object(TradingCore, "initialize_markets")
+    async def test_strategy_creation(self):
+        await strategy_start.start(self)
         self.assertEqual(self.strategy.order_amount, Decimal("1"))
         self.assertEqual(self.strategy.order_refresh_time, 60.)
         self.assertEqual(self.strategy.max_order_age, 300.)
@@ -92,3 +106,9 @@ class PureMarketMakingStartTest(unittest.TestCase):
         self.assertEqual(self.strategy.add_transaction_costs_to_orders, False)
         self.assertEqual(self.strategy.price_type, PriceType.BestBid)
         self.assertEqual(self.strategy.order_refresh_tolerance_pct, Decimal("0.02"))
+        self.assertEqual(self.strategy.split_order_levels_enabled, True)
+        self.assertEqual(self.strategy.bid_order_level_spreads, [Decimal("1"), Decimal("2")])
+        self.assertEqual(self.strategy.ask_order_level_spreads, [Decimal("1"), Decimal("2")])
+        self.assertEqual(self.strategy.order_override, {"split_level_0": ['buy', Decimal("1"), Decimal("1")],
+                                                        "split_level_1": ['buy', Decimal("2"), Decimal("2")],
+                                                        })

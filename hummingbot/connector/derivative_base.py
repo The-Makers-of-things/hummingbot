@@ -1,7 +1,11 @@
 from decimal import Decimal
-from hummingbot.connector.exchange_base import ExchangeBase
-from hummingbot.core.event.events import PositionMode
+from typing import TYPE_CHECKING
 
+from hummingbot.connector.exchange_base import ExchangeBase
+from hummingbot.core.data_type.common import PositionMode
+
+if TYPE_CHECKING:
+    from hummingbot.client.config.config_helpers import ClientConfigAdapter
 
 NaN = float("nan")
 s_decimal_NaN = Decimal("nan")
@@ -10,11 +14,11 @@ s_decimal_0 = Decimal(0)
 
 class DerivativeBase(ExchangeBase):
     """
-    DerivativeBase provide extra funtionality in addition to the ExchangeBase for derivative exchanges
+    DerivativeBase provide extra functionality in addition to the ExchangeBase for derivative exchanges
     """
 
-    def __init__(self):
-        super().__init__()
+    def __init__(self, client_config_map: "ClientConfigAdapter"):
+        super().__init__(client_config_map)
         self._funding_info = {}
         self._account_positions = {}
         self._position_mode = None
@@ -24,7 +28,7 @@ class DerivativeBase(ExchangeBase):
     def set_position_mode(self, position_mode: PositionMode):
         """
         Should set the _position_mode parameter. i.e self._position_mode = position_mode
-        This should also be overwritten if the derivative exchange requires interraction to set mode,
+        This should also be overwritten if the derivative exchange requires interaction to set mode,
         in addition to setting the _position_mode object.
         :param position_mode: ONEWAY or HEDGE position mode
         """
@@ -34,7 +38,7 @@ class DerivativeBase(ExchangeBase):
     def set_leverage(self, trading_pair: str, leverage: int = 1):
         """
         Should set the _leverage parameter. i.e self._leverage = leverage
-        This should also be overwritten if the derivative exchange requires interraction to set leverage,
+        This should also be overwritten if the derivative exchange requires interaction to set leverage,
         in addition to setting the _leverage object.
         :param _leverage: leverage to be used
         """

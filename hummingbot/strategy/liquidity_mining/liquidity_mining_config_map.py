@@ -5,20 +5,14 @@ The configuration parameters for a user made liquidity_mining strategy.
 import re
 from decimal import Decimal
 from typing import Optional
+
+from hummingbot.client.config.config_validators import validate_bool, validate_decimal, validate_exchange, validate_int
 from hummingbot.client.config.config_var import ConfigVar
-from hummingbot.client.config.config_validators import (
-    validate_exchange,
-    validate_decimal,
-    validate_int,
-    validate_bool
-)
-from hummingbot.client.settings import (
-    required_exchanges,
-)
+from hummingbot.client.settings import required_exchanges
 
 
 def exchange_on_validated(value: str) -> None:
-    required_exchanges.append(value)
+    required_exchanges.add(value)
 
 
 def market_validate(value: str) -> Optional[str]:
@@ -37,7 +31,7 @@ def market_validate(value: str) -> Optional[str]:
             # Check allowed ticker lengths
             if len(token.strip()) == 0:
                 return f"Invalid market. Ticker {token} has an invalid length."
-            if(bool(re.search('^[a-zA-Z0-9]*$', token)) is False):
+            if (bool(re.search('^[a-zA-Z0-9]*$', token)) is False):
                 return f"Invalid market. Ticker {token} contains invalid characters."
         # The pair is valid
         pair = f"{tokens[0]}-{tokens[1]}"

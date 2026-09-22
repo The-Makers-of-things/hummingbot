@@ -1,30 +1,27 @@
-#!/usr/bin/env python
-from typing import List
-from decimal import Decimal
 import logging
-import pandas as pd
 import unittest
+from decimal import Decimal
+from typing import List
 
-from hummingbot.strategy.market_trading_pair_tuple import MarketTradingPairTuple
+import pandas as pd
+
+from hummingbot.connector.exchange.paper_trade.paper_trade_exchange import QuantizationParams
+from hummingbot.connector.test_support.mock_paper_exchange import MockPaperExchange
 from hummingbot.core.clock import Clock, ClockMode
-from hummingbot.core.event.event_logger import EventLogger
-from hummingbot.core.event.events import (
-    MarketEvent,
-    OrderBookTradeEvent,
-    TradeType
-)
-from hummingbot.strategy.pure_market_making.pure_market_making import PureMarketMakingStrategy
-from hummingbot.strategy.order_book_asset_price_delegate import OrderBookAssetPriceDelegate
+from hummingbot.core.data_type.common import TradeType
 from hummingbot.core.data_type.order_book import OrderBook
 from hummingbot.core.data_type.order_book_row import OrderBookRow
-from hummingbot.connector.exchange.paper_trade.paper_trade_exchange import QuantizationParams
-from test.mock.mock_paper_exchange import MockPaperExchange
+from hummingbot.core.event.event_logger import EventLogger
+from hummingbot.core.event.events import MarketEvent, OrderBookTradeEvent
+from hummingbot.strategy.market_trading_pair_tuple import MarketTradingPairTuple
+from hummingbot.strategy.order_book_asset_price_delegate import OrderBookAssetPriceDelegate
+from hummingbot.strategy.pure_market_making.pure_market_making import PureMarketMakingStrategy
 
 logging.basicConfig(level=logging.ERROR)
 
 
 # Update the orderbook so that the top bids and asks are lower than actual for a wider bid ask spread
-# this basially removes the orderbook entries above top bid and below top ask
+# this basically removes the orderbook entries above top bid and below top ask
 def simulate_order_book_widening(order_book: OrderBook, top_bid: float, top_ask: float):
     bid_diffs: List[OrderBookRow] = []
     ask_diffs: List[OrderBookRow] = []

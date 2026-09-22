@@ -1,8 +1,8 @@
-from typing import Optional
+from typing import Any, Dict
 
-from hummingbot.client.config.config_methods import using_exchange
-from hummingbot.client.config.config_var import ConfigVar
-from hummingbot.connector.exchange.ndax import ndax_constants as CONSTANTS
+from pydantic import ConfigDict, Field, SecretStr
+
+from hummingbot.client.config.config_data_types import BaseConnectorConfigMap
 from hummingbot.core.utils.tracking_nonce import get_tracking_nonce
 
 CENTRALIZED = True
@@ -18,9 +18,13 @@ DEFAULT_FEES = [0.2, 0.2]
 # FEE_TYPE not required because default value is Percentage
 # FEE_TOKEN not required because the fee is not flat
 
-
-def convert_to_exchange_trading_pair(hb_trading_pair: str) -> str:
-    return hb_trading_pair.replace("-", "")
+def is_exchange_information_valid(exchange_info: Dict[str, Any]) -> bool:
+    """
+    Verifies if a trading pair is enabled to operate with based on its exchange information
+    :param exchange_info: the exchange information for a trading pair
+    :return: True if the trading pair is enabled, False otherwise
+    """
+    return exchange_info.get("SessionStatus", "Stopped") in ["Starting", "Running"]
 
 
 def get_new_client_order_id(is_buy: bool, trading_pair: str) -> str:
@@ -28,72 +32,94 @@ def get_new_client_order_id(is_buy: bool, trading_pair: str) -> str:
     return f"{HUMMINGBOT_ID_PREFIX}{ts_micro_sec}"
 
 
-def rest_api_url(connector_variant_label: Optional[str]) -> str:
-    variant = connector_variant_label if connector_variant_label else "ndax_main"
-    return CONSTANTS.REST_URLS.get(variant)
+class NdaxConfigMap(BaseConnectorConfigMap):
+    connector: str = "ndax"
+    ndax_uid: SecretStr = Field(
+        default=...,
+        json_schema_extra={
+            "prompt": "Enter your NDAX user ID (uid)",
+            "is_secure": True,
+            "is_connect_key": True,
+            "prompt_on_new": True,
+        }
+    )
+    ndax_account_name: SecretStr = Field(
+        default=...,
+        json_schema_extra={
+            "prompt": "Enter the name of the account you want to use",
+            "is_secure": True,
+            "is_connect_key": True,
+            "prompt_on_new": True,
+        }
+    )
+    ndax_api_key: SecretStr = Field(
+        default=...,
+        json_schema_extra={
+            "prompt": "Enter your NDAX API key",
+            "is_secure": True,
+            "is_connect_key": True,
+            "prompt_on_new": True,
+        }
+    )
+    ndax_secret_key: SecretStr = Field(
+        default=...,
+        json_schema_extra={
+            "prompt": "Enter your NDAX secret key",
+            "is_secure": True,
+            "is_connect_key": True,
+            "prompt_on_new": True,
+        }
+    )
+    model_config = ConfigDict(title="ndax")
 
 
-def wss_url(connector_variant_label: Optional[str]) -> str:
-    variant = connector_variant_label if connector_variant_label else "ndax_main"
-    return CONSTANTS.WSS_URLS.get(variant)
-
-
-KEYS = {
-    "ndax_uid":
-        ConfigVar(key="ndax_uid",
-                  prompt="Enter your NDAX user ID (uid) >>> ",
-                  required_if=using_exchange("ndax"),
-                  is_secure=True,
-                  is_connect_key=True),
-    "ndax_account_name":
-        ConfigVar(key="ndax_account_name",
-                  prompt="Enter the name of the account you want to use >>> ",
-                  required_if=using_exchange("ndax"),
-                  is_secure=True,
-                  is_connect_key=True),
-    "ndax_api_key":
-        ConfigVar(key="ndax_api_key",
-                  prompt="Enter your NDAX API key >>> ",
-                  required_if=using_exchange("ndax"),
-                  is_secure=True,
-                  is_connect_key=True),
-    "ndax_secret_key":
-        ConfigVar(key="ndax_secret_key",
-                  prompt="Enter your NDAX secret key >>> ",
-                  required_if=using_exchange("ndax"),
-                  is_secure=True,
-                  is_connect_key=True),
-}
+KEYS = NdaxConfigMap.model_construct()
 
 OTHER_DOMAINS = ["ndax_testnet"]
 OTHER_DOMAINS_PARAMETER = {"ndax_testnet": "ndax_testnet"}
 OTHER_DOMAINS_EXAMPLE_PAIR = {"ndax_testnet": "BTC-CAD"}
 OTHER_DOMAINS_DEFAULT_FEES = {"ndax_testnet": [0.2, 0.2]}
-OTHER_DOMAINS_KEYS = {
-    "ndax_testnet": {
-        "ndax_testnet_uid":
-            ConfigVar(key="ndax_testnet_uid",
-                      prompt="Enter your NDAX user ID (uid) >>> ",
-                      required_if=using_exchange("ndax_testnet"),
-                      is_secure=True,
-                      is_connect_key=True),
-        "ndax_testnet_account_name":
-            ConfigVar(key="ndax_testnet_account_name",
-                      prompt="Enter the name of the account you want to use >>> ",
-                      required_if=using_exchange("ndax_testnet"),
-                      is_secure=True,
-                      is_connect_key=True),
-        "ndax_testnet_api_key":
-            ConfigVar(key="ndax_testnet_api_key",
-                      prompt="Enter your NDAX API key >>> ",
-                      required_if=using_exchange("ndax_testnet"),
-                      is_secure=True,
-                      is_connect_key=True),
-        "ndax_testnet_secret_key":
-            ConfigVar(key="ndax_testnet_secret_key",
-                      prompt="Enter your NDAX secret key >>> ",
-                      required_if=using_exchange("ndax_testnet"),
-                      is_secure=True,
-                      is_connect_key=True),
-    }
-}
+
+
+class NdaxTestnetConfigMap(BaseConnectorConfigMap):
+    connector: str = "ndax_testnet"
+    ndax_testnet_uid: SecretStr = Field(
+        default=...,
+        json_schema_extra={
+            "prompt": "Enter your NDAX Testnet user ID (uid)",
+            "is_secure": True,
+            "is_connect_key": True,
+            "prompt_on_new": True,
+        }
+    )
+    ndax_testnet_account_name: SecretStr = Field(
+        default=...,
+        json_schema_extra={
+            "prompt": "Enter the name of the account you want to use",
+            "is_secure": True,
+            "is_connect_key": True,
+            "prompt_on_new": True,
+        }
+    )
+    ndax_testnet_api_key: SecretStr = Field(
+        default=...,
+        json_schema_extra={
+            "prompt": "Enter your NDAX Testnet API key",
+            "is_secure": True,
+            "is_connect_key": True,
+            "pr}mpt_on_new": True,
+        }
+    )
+    ndax_testnet_secret_key: SecretStr = Field(
+        default=...,
+        json_schema_extra={
+            "prompt": "Enter your NDAX Testnet secret key",
+            "is_secure": True,
+            "is_connect_key": True,
+            "prompt_on_new": True,
+        }
+    )
+    model_config = ConfigDict(title="ndax_testnet")
+
+
+OTHER_DOMAINS_KEYS = {"ndax_testnet": NdaxTestnetConfigMap.model_construct()}

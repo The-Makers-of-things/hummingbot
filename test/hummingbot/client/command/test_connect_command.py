@@ -1,32 +1,31 @@
 import asyncio
-import unittest
-from copy import deepcopy
-from typing import Awaitable
-from unittest.mock import patch, MagicMock, AsyncMock
-
-from hummingbot.client.config.global_config_map import global_config_map
-from hummingbot.client.hummingbot_application import HummingbotApplication
+from test.isolated_asyncio_wrapper_test_case import IsolatedAsyncioWrapperTestCase
 from test.mock.mock_cli import CLIMockingAssistant
+from unittest.mock import AsyncMock, MagicMock, patch
+
+import pandas as pd
+
+from hummingbot.client.config.client_config_map import ClientConfigMap, DBSqliteMode
+from hummingbot.client.config.config_helpers import ClientConfigAdapter, read_system_configs_from_yml
+from hummingbot.client.config.security import Security
+from hummingbot.client.hummingbot_application import HummingbotApplication
 
 
-class ConnectCommandTest(unittest.TestCase):
+class ConnectCommandTest(IsolatedAsyncioWrapperTestCase):
     @patch("hummingbot.core.utils.trading_pair_fetcher.TradingPairFetcher")
-    def setUp(self, _: MagicMock) -> None:
-        super().setUp()
-        self.ev_loop = asyncio.get_event_loop()
-        self.app = HummingbotApplication()
+    @patch("hummingbot.core.gateway.gateway_http_client.GatewayHttpClient.start_monitor")
+    @patch("hummingbot.client.hummingbot_application.HummingbotApplication.mqtt_start")
+    async def asyncSetUp(self, mock_mqtt_start, mock_gateway_start, mock_trading_pair_fetcher):
+        await read_system_configs_from_yml()
+        self.client_config_map = ClientConfigAdapter(ClientConfigMap())
+        self.app = HummingbotApplication(client_config_map=self.client_config_map)
         self.cli_mock_assistant = CLIMockingAssistant(self.app.app)
         self.cli_mock_assistant.start()
-        self.global_config_backup = deepcopy(global_config_map)
 
     def tearDown(self) -> None:
         self.cli_mock_assistant.stop()
-        self.reset_global_config()
+        Security._decryption_done.clear()
         super().tearDown()
-
-    def reset_global_config(self):
-        for key, value in self.global_config_backup.items():
-            global_config_map[key] = value
 
     @staticmethod
     def get_async_sleep_fn(delay: float):
@@ -34,85 +33,58 @@ class ConnectCommandTest(unittest.TestCase):
             await asyncio.sleep(delay)
         return async_sleep
 
-    def async_run_with_timeout(self, coroutine: Awaitable, timeout: float = 1):
-        ret = self.ev_loop.run_until_complete(asyncio.wait_for(coroutine, timeout))
-        return ret
-
-    def async_run_with_timeout_coroutine_must_raise_timeout(self, coroutine: Awaitable, timeout: float = 1):
-        class DesiredError(Exception):
-            pass
-
-        async def run_coro_that_raises(coro: Awaitable):
-            try:
-                await coro
-            except asyncio.TimeoutError:
-                raise DesiredError
-
-        try:
-            self.async_run_with_timeout(run_coro_that_raises(coroutine), timeout)
-        except DesiredError:  # the coroutine raised an asyncio.TimeoutError as expected
-            raise asyncio.TimeoutError
-        except asyncio.TimeoutError:  # the coroutine did not finish on time
-            raise RuntimeError
-
+    @patch("hummingbot.client.config.security.Security.wait_til_decryption_done")
     @patch("hummingbot.client.config.security.Security.update_secure_config")
-    @patch("hummingbot.client.config.security.Security.encrypted_file_exists")
+    @patch("hummingbot.client.config.security.Security.connector_config_file_exists")
     @patch("hummingbot.client.config.security.Security.api_keys")
     @patch("hummingbot.user.user_balances.UserBalances.add_exchange")
-    def test_connect_exchange_success(
+    async def test_connect_exchange_success(
         self,
         add_exchange_mock: AsyncMock,
         api_keys_mock: AsyncMock,
-        encrypted_file_exists_mock: MagicMock,
-        _: MagicMock
+        connector_config_file_exists_mock: MagicMock,
+        update_secure_config_mock: MagicMock,
+        _: MagicMock,
     ):
         add_exchange_mock.return_value = None
         exchange = "binance"
         api_key = "someKey"
         api_secret = "someSecret"
-        api_keys_mock.return_value = {
-            "binance_api_key": api_key, "binance_api_secret": api_secret
-        }
-        encrypted_file_exists_mock.return_value = False
-        global_config_map["other_commands_timeout"].value = 30
+        api_keys_mock.return_value = {"binance_api_key": api_key, "binance_api_secret": api_secret}
+        connector_config_file_exists_mock.return_value = False
         self.cli_mock_assistant.queue_prompt_reply(api_key)  # binance API key
         self.cli_mock_assistant.queue_prompt_reply(api_secret)  # binance API secret
 
-        self.async_run_with_timeout(self.app.connect_exchange(exchange))
-        self.assertTrue(
-            self.cli_mock_assistant.check_log_called_with(
-                msg=f"\nYou are now connected to {exchange}."
-            )
-        )
+        await self.app.connect_exchange(exchange)
+        self.assertTrue(self.cli_mock_assistant.check_log_called_with(msg=f"\nYou are now connected to {exchange}."))
         self.assertFalse(self.app.placeholder_mode)
         self.assertFalse(self.app.app.hide_input)
+        self.assertEqual(update_secure_config_mock.call_count, 1)
 
+    @patch("hummingbot.client.config.security.Security.wait_til_decryption_done")
     @patch("hummingbot.client.config.security.Security.update_secure_config")
-    @patch("hummingbot.client.config.security.Security.encrypted_file_exists")
+    @patch("hummingbot.client.config.security.Security.connector_config_file_exists")
     @patch("hummingbot.client.config.security.Security.api_keys")
     @patch("hummingbot.user.user_balances.UserBalances.add_exchange")
-    def test_connect_exchange_handles_network_timeouts(
+    async def test_connect_exchange_handles_network_timeouts(
         self,
         add_exchange_mock: AsyncMock,
         api_keys_mock: AsyncMock,
-        encrypted_file_exists_mock: MagicMock,
-        _: MagicMock
+        connector_config_file_exists_mock: MagicMock,
+        _: MagicMock,
+        __: MagicMock,
     ):
         add_exchange_mock.side_effect = self.get_async_sleep_fn(delay=0.02)
-        global_config_map["other_commands_timeout"].value = 0.01
+        self.client_config_map.commands_timeout.other_commands_timeout = 0.01
         api_key = "someKey"
         api_secret = "someSecret"
-        api_keys_mock.return_value = {
-            "binance_api_key": api_key, "binance_api_secret": api_secret
-        }
-        encrypted_file_exists_mock.return_value = False
+        api_keys_mock.return_value = {"binance_api_key": api_key, "binance_api_secret": api_secret}
+        connector_config_file_exists_mock.return_value = False
         self.cli_mock_assistant.queue_prompt_reply(api_key)  # binance API key
         self.cli_mock_assistant.queue_prompt_reply(api_secret)  # binance API secret
 
         with self.assertRaises(asyncio.TimeoutError):
-            self.async_run_with_timeout_coroutine_must_raise_timeout(
-                self.app.connect_exchange("binance")
-            )
+            await self.app.connect_exchange("binance")
         self.assertTrue(
             self.cli_mock_assistant.check_log_called_with(
                 msg="\nA network error prevented the connection to complete. See logs for more details."
@@ -121,13 +93,93 @@ class ConnectCommandTest(unittest.TestCase):
         self.assertFalse(self.app.placeholder_mode)
         self.assertFalse(self.app.app.hide_input)
 
+    @patch("hummingbot.client.config.security.Security.wait_til_decryption_done")
+    @patch("hummingbot.client.config.security.Security.remove_secure_config")
+    @patch("hummingbot.client.config.security.Security.update_secure_config")
+    @patch("hummingbot.client.config.security.Security.connector_config_file_exists")
+    @patch("hummingbot.client.config.security.Security.api_keys")
+    @patch("hummingbot.user.user_balances.UserBalances.connect_market")
+    async def test_connect_exchange_validation_failure_does_not_save_config(
+        self,
+        connect_market_mock: MagicMock,
+        api_keys_mock: MagicMock,
+        connector_config_file_exists_mock: MagicMock,
+        update_secure_config_mock: MagicMock,
+        remove_secure_config_mock: MagicMock,
+        _: MagicMock,
+    ):
+        # A connector whose construction rejects the credentials (e.g. Hyperliquid private key that
+        # does not derive to the supplied wallet address) must surface a clean error message, must
+        # not leave the client prompt unusable, and must not leave a connector config file behind.
+        error_msg = (
+            "Hyperliquid private key does not derive to the supplied wallet address. "
+            "Verify the private key matches the wallet address you intend to trade from, "
+            "set use_vault=True if the supplied address is a vault address, or select the "
+            "api_wallet connection mode if you are using a Hyperliquid API/agent wallet key."
+        )
+        connect_market_mock.side_effect = ValueError(error_msg)
+        exchange = "binance"
+        api_key = "someKey"
+        api_secret = "someSecret"
+        api_keys_mock.return_value = {"binance_api_key": api_key, "binance_api_secret": api_secret}
+        connector_config_file_exists_mock.return_value = False
+        self.cli_mock_assistant.queue_prompt_reply(api_key)  # binance API key
+        self.cli_mock_assistant.queue_prompt_reply(api_secret)  # binance API secret
+
+        await self.app.connect_exchange(exchange)
+
+        self.assertTrue(self.cli_mock_assistant.check_log_called_with(msg=f"\nError: {error_msg}"))
+        # config was persisted before validation and must be rolled back on failure
+        self.assertEqual(update_secure_config_mock.call_count, 1)
+        remove_secure_config_mock.assert_called_once_with(exchange)
+        # the client must return to a usable prompt
+        self.assertFalse(self.app.placeholder_mode)
+        self.assertFalse(self.app.app.hide_input)
+
+    @patch("hummingbot.client.config.security.Security.wait_til_decryption_done")
+    @patch("hummingbot.client.config.security.Security.remove_secure_config")
+    @patch("hummingbot.client.config.security.Security.update_secure_config")
+    @patch("hummingbot.client.config.security.Security.connector_config_file_exists")
+    @patch("hummingbot.client.config.security.Security.api_keys")
+    @patch("hummingbot.user.user_balances.UserBalances.connect_market")
+    async def test_connect_exchange_validation_failure_restores_previous_config(
+        self,
+        connect_market_mock: MagicMock,
+        api_keys_mock: MagicMock,
+        connector_config_file_exists_mock: MagicMock,
+        update_secure_config_mock: MagicMock,
+        remove_secure_config_mock: MagicMock,
+        _: MagicMock,
+    ):
+        # When existing keys are being replaced and the new ones fail validation, the previous
+        # config is restored (and nothing is removed).
+        connect_market_mock.side_effect = ValueError("invalid credentials")
+        exchange = "binance"
+        api_key = "someKey"
+        api_secret = "someSecret"
+        api_keys_mock.return_value = {"binance_api_key": api_key, "binance_api_secret": api_secret}
+        connector_config_file_exists_mock.return_value = True
+        self.cli_mock_assistant.queue_prompt_reply("Yes")  # replace existing keys
+        self.cli_mock_assistant.queue_prompt_reply(api_key)  # binance API key
+        self.cli_mock_assistant.queue_prompt_reply(api_secret)  # binance API secret
+
+        await self.app.connect_exchange(exchange)
+
+        self.assertTrue(self.cli_mock_assistant.check_log_called_with(msg="\nError: invalid credentials"))
+        # first call saves the new config, second call restores the original one
+        self.assertEqual(update_secure_config_mock.call_count, 2)
+        remove_secure_config_mock.assert_not_called()
+        self.assertFalse(self.app.placeholder_mode)
+        self.assertFalse(self.app.app.hide_input)
+
     @patch("hummingbot.user.user_balances.UserBalances.update_exchanges")
-    def test_connection_df_handles_network_timeouts(self, update_exchanges_mock: AsyncMock):
+    @patch("hummingbot.client.config.security.Security.wait_til_decryption_done")
+    async def test_connection_df_handles_network_timeouts(self, _: AsyncMock, update_exchanges_mock: AsyncMock):
         update_exchanges_mock.side_effect = self.get_async_sleep_fn(delay=0.02)
-        global_config_map["other_commands_timeout"].value = 0.01
+        self.client_config_map.commands_timeout.other_commands_timeout = 0.01
 
         with self.assertRaises(asyncio.TimeoutError):
-            self.async_run_with_timeout_coroutine_must_raise_timeout(self.app.connection_df())
+            await self.app.connection_df()
         self.assertTrue(
             self.cli_mock_assistant.check_log_called_with(
                 msg="\nA network error prevented the connection table to populate. See logs for more details."
@@ -135,16 +187,50 @@ class ConnectCommandTest(unittest.TestCase):
         )
 
     @patch("hummingbot.user.user_balances.UserBalances.update_exchanges")
-    def test_connection_df_handles_network_timeouts_logs_hidden(self, update_exchanges_mock: AsyncMock):
+    @patch("hummingbot.client.config.security.Security.wait_til_decryption_done")
+    async def test_connection_df_handles_network_timeouts_logs_hidden(self, _: AsyncMock, update_exchanges_mock: AsyncMock):
         self.cli_mock_assistant.toggle_logs()
 
         update_exchanges_mock.side_effect = self.get_async_sleep_fn(delay=0.02)
-        global_config_map["other_commands_timeout"].value = 0.01
+        self.client_config_map.commands_timeout.other_commands_timeout = 0.01
 
         with self.assertRaises(asyncio.TimeoutError):
-            self.async_run_with_timeout_coroutine_must_raise_timeout(self.app.connection_df())
+            await self.app.connection_df()
         self.assertTrue(
             self.cli_mock_assistant.check_log_called_with(
                 msg="\nA network error prevented the connection table to populate. See logs for more details."
             )
         )
+
+    @patch("hummingbot.client.hummingbot_application.HummingbotApplication.notify")
+    @patch("hummingbot.client.hummingbot_application.HummingbotApplication.connection_df")
+    async def test_show_connections(self, connection_df_mock, notify_mock):
+        self.client_config_map.db_mode = DBSqliteMode()
+
+        Security._decryption_done.set()
+
+        captures = []
+        notify_mock.side_effect = lambda s: captures.append(s)
+
+        connections_df = pd.DataFrame(
+            columns=pd.Index(['Exchange', '  Keys Added', '  Keys Confirmed', '  Status'], dtype='object'),
+            data=[
+                ["ascend_ex", "Yes", "Yes", "&cYELLOW"],
+            ]
+        )
+        connection_df_mock.return_value = (connections_df, [])
+
+        await self.app.show_connections()
+
+        self.assertEqual(2, len(captures))
+        self.assertEqual("\nTesting connections, please wait...", captures[0])
+
+        df_str_expected = (
+            "    +------------+----------------+--------------------+------------+"
+            "\n    | Exchange   |   Keys Added   |   Keys Confirmed   |   Status   |"
+            "\n    |------------+----------------+--------------------+------------|"
+            "\n    | ascend_ex  | Yes            | Yes                | &cYELLOW   |"
+            "\n    +------------+----------------+--------------------+------------+"
+        )
+
+        self.assertEqual(df_str_expected, captures[1])

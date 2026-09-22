@@ -1,10 +1,11 @@
 from decimal import Decimal
-from hummingbot.strategy.market_trading_pair_tuple import MarketTradingPairTuple
+
 from hummingbot.strategy.liquidity_mining.liquidity_mining import LiquidityMiningStrategy
 from hummingbot.strategy.liquidity_mining.liquidity_mining_config_map import liquidity_mining_config_map as c_map
+from hummingbot.strategy.market_trading_pair_tuple import MarketTradingPairTuple
 
 
-def start(self):
+async def start(self):
     exchange = c_map.get("exchange").value.lower()
     el_markets = list(c_map.get("markets").value.split(","))
     token = c_map.get("token").value.upper()
@@ -25,7 +26,7 @@ def start(self):
     max_spread = c_map.get("max_spread").value / Decimal("100")
     max_order_age = c_map.get("max_order_age").value
 
-    self._initialize_markets([(exchange, markets)])
+    await self.initialize_markets([(exchange, markets)])
     exchange = self.markets[exchange]
     market_infos = {}
     for market in markets:
@@ -33,6 +34,7 @@ def start(self):
         market_infos[market] = MarketTradingPairTuple(exchange, market, base, quote)
     self.strategy = LiquidityMiningStrategy()
     self.strategy.init_params(
+        client_config_map=self.client_config_map,
         exchange=exchange,
         market_infos=market_infos,
         token=token,

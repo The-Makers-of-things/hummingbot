@@ -1,16 +1,10 @@
 from decimal import Decimal
 from typing import Optional
 
-from sqlalchemy import (
-    Column,
-    String,
-    Numeric,
-    Integer,
-    UniqueConstraint,
-)
+from sqlalchemy import Column, Integer, Numeric, String, UniqueConstraint
 from sqlalchemy.orm import Session
 
-from . import HummingbotBase
+from hummingbot.model import HummingbotBase
 
 
 class InventoryCost(HummingbotBase):
@@ -68,8 +62,3 @@ class InventoryCost(HummingbotBase):
                 quote_volume=float(quote_volume),
             )
             sql_session.add(record)
-
-        try:
-            sql_session.commit()
-        except Exception:
-            sql_session.rollback()

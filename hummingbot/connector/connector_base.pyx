@@ -1,27 +1,21 @@
+import asyncio
+import time
 from decimal import Decimal
-from typing import (
-    Dict,
-    List,
-    Tuple,
-    Set,
-)
-from hummingbot.core.data_type.cancellation_result import CancellationResult
-from hummingbot.core.event.events import (
-    MarketEvent,
-    OrderType,
-    TradeType
-)
-from hummingbot.core.event.event_logger import EventLogger
-from hummingbot.core.network_iterator import NetworkIterator
-from hummingbot.connector.in_flight_order_base import InFlightOrderBase
-from hummingbot.connector.utils import TradeFillOrderDetails
-from hummingbot.core.event.events import OrderFilledEvent
-from hummingbot.client.config.global_config_map import global_config_map
-from hummingbot.core.utils.estimate_fee import estimate_fee
+from typing import Dict, List, Set, Tuple, TYPE_CHECKING, Union, Optional
 
-NaN = float("nan")
-s_decimal_NaN = Decimal("nan")
-s_decimal_0 = Decimal(0)
+from hummingbot.client.config.trade_fee_schema_loader import TradeFeeSchemaLoader
+from hummingbot.connector.in_flight_order_base import InFlightOrderBase
+from hummingbot.connector.utils import split_hb_trading_pair, TradeFillOrderDetails
+from hummingbot.connector.constants import s_decimal_NaN, s_decimal_0
+from hummingbot.core.clock cimport Clock
+from hummingbot.core.data_type.limit_order import LimitOrder
+from hummingbot.core.data_type.cancellation_result import CancellationResult
+from hummingbot.core.data_type.common import OrderType, TradeType
+from hummingbot.core.data_type.market_order import MarketOrder
+from hummingbot.core.event.event_logger import EventLogger
+from hummingbot.core.event.events import MarketEvent, OrderFilledEvent
+from hummingbot.core.network_iterator import NetworkIterator
+from hummingbot.core.utils.estimate_fee import estimate_fee
 
 
 cdef class ConnectorBase(NetworkIterator):
@@ -38,14 +32,12 @@ cdef class ConnectorBase(NetworkIterator):
         MarketEvent.BuyOrderCreated,
         MarketEvent.SellOrderCreated,
         MarketEvent.FundingPaymentCompleted,
-        MarketEvent.RangePositionCreated,
-        MarketEvent.RangePositionRemoved,
-        MarketEvent.RangePositionUpdated,
-        MarketEvent.RangePositionFailure,
-        MarketEvent.RangePositionInitiated,
+        MarketEvent.RangePositionLiquidityAdded,
+        MarketEvent.RangePositionLiquidityRemoved,
+        MarketEvent.RangePositionUpdateFailure,
     ]
 
-    def __init__(self):
+    def __init__(self, balance_asset_limit: Optional[Dict[str, Dict[str, Decimal]]] = None):
         super().__init__()
 
         self._event_reporter = EventReporter(event_source=self.display_name)
@@ -65,6 +57,8 @@ cdef class ConnectorBase(NetworkIterator):
         self._in_flight_orders_snapshot_timestamp = 0.0
         self._current_trade_fills = set()
         self._exchange_order_ids = dict()
+        self._trade_fee_schema = None
+        self._balance_asset_limit: Dict[str, Dict[str, object]] = balance_asset_limit or dict()
 
     @property
     def real_time_balance_update(self) -> bool:
@@ -100,7 +94,7 @@ cdef class ConnectorBase(NetworkIterator):
 
     @staticmethod
     def split_trading_pair(trading_pair: str) -> Tuple[str, str]:
-        return tuple(trading_pair.split('-'))
+        return split_hb_trading_pair(trading_pair)
 
     def in_flight_asset_balances(self, in_flight_orders: Dict[str, InFlightOrderBase]) -> Dict[str, Decimal]:
         """
@@ -113,20 +107,19 @@ cdef class ConnectorBase(NetworkIterator):
         asset_balances = {}
         if in_flight_orders is None:
             return asset_balances
-        for order in [o for o in in_flight_orders.values() if not (o.is_done or o.is_failure or o.is_cancelled)]:
+        for order in (o for o in in_flight_orders.values() if not (o.is_done or o.is_failure or o.is_cancelled)):
+            outstanding_amount = order.amount - order.executed_amount_base
             if order.trade_type is TradeType.BUY:
-                order_value = Decimal(order.amount * order.price)
-                outstanding_value = order_value - order.executed_amount_quote
+                outstanding_value = outstanding_amount * order.price
                 if order.quote_asset not in asset_balances:
                     asset_balances[order.quote_asset] = s_decimal_0
                 fee = self.estimate_fee_pct(True)
-                outstanding_value *= (Decimal(1) + fee)
+                outstanding_value *= Decimal(1) + fee
                 asset_balances[order.quote_asset] += outstanding_value
             else:
-                outstanding_value = order.amount - order.executed_amount_base
                 if order.base_asset not in asset_balances:
                     asset_balances[order.base_asset] = s_decimal_0
-                asset_balances[order.base_asset] += outstanding_value
+                asset_balances[order.base_asset] += outstanding_amount
         return asset_balances
 
     def order_filled_balances(self, starting_timestamp = 0) -> Dict[str, Decimal]:
@@ -160,10 +153,7 @@ cdef class ConnectorBase(NetworkIterator):
         """
         Retrieves the Balance Limits for the specified market.
         """
-        all_ex_limit = global_config_map["balance_asset_limit"].value
-        if all_ex_limit is None:
-            return {}
-        exchange_limits = all_ex_limit.get(market, {})
+        exchange_limits = self._balance_asset_limit.get(market, {})
         return exchange_limits if exchange_limits is not None else {}
 
     @property
@@ -217,16 +207,25 @@ cdef class ConnectorBase(NetworkIterator):
         NetworkIterator.c_tick(self, timestamp)
         self.tick(timestamp)
 
+    cdef c_start(self, Clock clock, double timestamp):
+        self.start(clock=clock, timestamp=timestamp)
+
+    def start(self, Clock clock, double timestamp):
+        NetworkIterator.c_start(self, clock, timestamp)
+
+    cdef c_stop(self, Clock clock):
+        NetworkIterator.c_stop(self, clock)
+
     async def cancel_all(self, timeout_seconds: float) -> List[CancellationResult]:
         """
         Cancels all in-flight orders and waits for cancellation results.
         Used by bot's top level stop and exit commands (cancelling outstanding orders on exit)
         :param timeout_seconds: The timeout at which the operation will be canceled.
-        :returns List of CancellationResult which indicates whether each order is successfully cancelled.
+        :returns List of CancellationResult which indicates whether each order is successfully canceled.
         """
         raise NotImplementedError
 
-    def buy(self, trading_pair: str, amount: Decimal, order_type: OrderType, price: Decimal) -> str:
+    def buy(self, trading_pair: str, amount: Decimal, order_type: OrderType, price: Decimal, **kwargs) -> str:
         """
         Buys an amount of base asset (of the given trading pair).
         :param trading_pair: The market (e.g. BTC-USDT) to buy from
@@ -239,9 +238,9 @@ cdef class ConnectorBase(NetworkIterator):
 
     cdef str c_buy(self, str trading_pair, object amount, object order_type=OrderType.MARKET,
                    object price=s_decimal_NaN, dict kwargs={}):
-        return self.buy(trading_pair, amount, order_type, price)
+        return self.buy(trading_pair, amount, order_type, price, **kwargs)
 
-    def sell(self, trading_pair: str, amount: Decimal, order_type: OrderType, price: Decimal) -> str:
+    def sell(self, trading_pair: str, amount: Decimal, order_type: OrderType, price: Decimal, **kwargs) -> str:
         """
         Sells an amount of base asset (of the given trading pair).
         :param trading_pair: The market (e.g. BTC-USDT) to sell from
@@ -252,9 +251,67 @@ cdef class ConnectorBase(NetworkIterator):
         """
         raise NotImplementedError
 
+    def batch_order_create(
+        self, orders_to_create: List[Union[LimitOrder, MarketOrder]]
+    ) -> List[Union[LimitOrder, MarketOrder]]:
+        """
+        Issues a batch order creation as a single API request for exchanges that implement this feature. The default
+        implementation of this method is to send the requests discretely (one by one).
+        :param orders_to_create: A list of LimitOrder or MarketOrder objects representing the orders to create. The
+            order IDs can be blanc.
+        :returns: A list of LimitOrder or MarketOrder objects representing the created orders, complete with the
+            generated order IDs.
+        """
+        creation_results = []
+        for order in orders_to_create:
+            order_type = OrderType.LIMIT if isinstance(order, LimitOrder) else OrderType.MARKET
+            size = order.quantity if order_type == OrderType.LIMIT else order.amount
+            if order.is_buy:
+                client_order_id = self.buy(
+                    trading_pair=order.trading_pair,
+                    amount=size,
+                    order_type=order_type,
+                    price=order.price if order_type == OrderType.LIMIT else s_decimal_NaN
+                )
+            else:
+                client_order_id = self.sell(
+                    trading_pair=order.trading_pair,
+                    amount=size,
+                    order_type=order_type,
+                    price=order.price if order_type == OrderType.LIMIT else s_decimal_NaN,
+                )
+            if order_type == OrderType.LIMIT:
+                creation_results.append(
+                    LimitOrder(
+                        client_order_id=client_order_id,
+                        trading_pair=order.trading_pair,
+                        is_buy=order.is_buy,
+                        base_currency=order.base_currency,
+                        quote_currency=order.quote_currency,
+                        price=order.price,
+                        quantity=size,
+                        filled_quantity=order.filled_quantity,
+                        creation_timestamp=order.creation_timestamp,
+                        status=order.status,
+                    )
+                )
+            else:
+                creation_results.append(
+                    MarketOrder(
+                        order_id=client_order_id,
+                        trading_pair=order.trading_pair,
+                        is_buy=order.is_buy,
+                        base_asset=order.base_asset,
+                        quote_asset=order.quote_asset,
+                        amount=size,
+                        timestamp=order.timestamp,
+                    )
+                )
+        return creation_results
+
     cdef str c_sell(self, str trading_pair, object amount, object order_type=OrderType.MARKET,
                     object price=s_decimal_NaN, dict kwargs={}):
-        return self.sell(trading_pair, amount, order_type, price)
+        return self.sell(trading_pair, amount, order_type, price, **kwargs)
 
     cdef c_cancel(self, str trading_pair, str client_order_id):
         self.cancel(trading_pair, client_order_id)
@@ -266,6 +323,15 @@ cdef class ConnectorBase(NetworkIterator):
         :param client_order_id: The internal order id (also called client_order_id)
         """
         raise NotImplementedError
+
+    def batch_order_cancel(self, orders_to_cancel: List[LimitOrder]):
+        """
+        Issues a batch order cancelation as a single API request for exchanges that implement this feature. The default
+        implementation of this method is to send the requests discretely (one by one).
+        :param orders_to_cancel: A list of the orders to cancel.
+        """
+        for order in orders_to_cancel:
+            self.cancel(trading_pair=order.trading_pair, client_order_id=order.client_order_id)
 
     cdef c_stop_tracking_order(self, str order_id):
         raise NotImplementedError
@@ -318,7 +384,7 @@ cdef class ConnectorBase(NetworkIterator):
         :param currency: the token symbol
         :param available_balance: the current available_balance, this is also the snap balance taken since last
         _update_balances()
-        :returns the real available that accounts for changes in in flight orders and filled orders
+        :returns the real available that accounts for changes in flight orders and filled orders
         """
         snapshot_bal = self.in_flight_asset_balances(self._in_flight_orders_snapshot).get(currency, s_decimal_0)
         in_flight_bal = self.in_flight_asset_balances(self.in_flight_orders).get(currency, s_decimal_0)
@@ -332,7 +398,7 @@ cdef class ConnectorBase(NetworkIterator):
 
     def get_available_balance(self, currency: str) -> Decimal:
         """
-        Return availalbe balance for a given currency. The function accounts for balance changes since the last time
+        Return available balance for a given currency. The function accounts for balance changes since the last time
         the snapshot was taken if no real time balance update. The function applied limit if configured.
         :param currency: The currency (token) name
         :returns: Balance available for trading for the specified currency
@@ -444,3 +510,35 @@ cdef class ConnectorBase(NetworkIterator):
         # Assume (market, exchange_trade_id, trading_pair) are unique. Also order has to be recorded in Order table
         return (not TradeFillOrderDetails(self.display_name, exchange_trade_id, trading_pair) in self._current_trade_fills) and \
                (exchange_order_id in set(self._exchange_order_ids.keys()))
+
+    def trade_fee_schema(self):
+        if self._trade_fee_schema is None:
+            self._trade_fee_schema = TradeFeeSchemaLoader.configured_schema_for_exchange(exchange_name=self.name)
+        return self._trade_fee_schema
+
+    async def all_trading_pairs(self) -> List[str]:
+        """
+        List of all trading pairs supported by the connector
+
+        :return: List of trading pair symbols in the Hummingbot format
+        """
+        raise NotImplementedError
+
+    async def _update_balances(self):
+        """
+        Update local balances requesting the latest information from the exchange.
+        """
+        raise NotImplementedError
+
+    def _time(self) -> float:
+        """
+        Method created to enable tests to mock the machine time
+        :return: The machine time (time.time())
+        """
+        return time.time()
+
+    async def _sleep(self, delay: float):
+        """
+        Method created to enable tests to prevent processes from sleeping
+        """
+        await asyncio.sleep(delay)

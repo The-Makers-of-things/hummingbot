@@ -1,38 +1,29 @@
 #!/usr/bin/env python
 
-import path_util        # noqa: F401
 import argparse
 import asyncio
 import logging
-from typing import (
-    Coroutine,
-    List,
-)
 import os
-import subprocess
+from typing import Coroutine, List
 
-from hummingbot import (
-    check_dev_mode,
-    init_logging,
-)
+import path_util  # noqa: F401
+
+from bin.hummingbot import UIStartListener, detect_available_port
+from hummingbot import init_logging
+from hummingbot.client.config.config_crypt import BaseSecretsManager, ETHKeyFileSecretManger
+from hummingbot.client.config.config_helpers import load_client_config_map_from_file
 from hummingbot.client.hummingbot_application import HummingbotApplication
-from hummingbot.client.config.global_config_map import global_config_map
-from hummingbot.client.config.config_helpers import (
-    create_yml_files,
-    write_config_to_yml,
-    read_system_configs_from_yml,
-    update_strategy_config_map_from_file,
-    all_configs_complete,
+from hummingbot.client.runner import (
+    autofix_permissions,
+    bootstrap_application,
+    load_and_start_strategy,
+    wait_for_gateway_ready,
 )
 from hummingbot.client.ui import login_prompt
-from hummingbot.client.ui.stdout_redirection import patch_stdout
-from hummingbot.core.utils.async_utils import safe_gather
+from hummingbot.client.ui.style import load_style
+from hummingbot.core.event.events import HummingbotUIEvent
 from hummingbot.core.management.console import start_management_console
-from bin.hummingbot import (
-    detect_available_port,
-)
-from hummingbot.client.settings import CONF_FILE_PATH
-from hummingbot.client.config.security import Security
+from hummingbot.core.utils.async_utils import safe_gather
 
 
 class CmdlineParser(argparse.ArgumentParser):
@@ -42,80 +33,84 @@ class CmdlineParser(argparse.ArgumentParser):
                           type=str,
                           required=False,
                           help="Specify a file in `conf/` to load as the strategy config file.")
-        self.add_argument("--wallet", "-w",
+        self.add_argument("--v2",
                           type=str,
                           required=False,
-                          help="Specify the wallet public key you would like to use.")
-        self.add_argument("--config-password", "--wallet-password", "-p",
+                          dest="v2_conf",
+                          help="V2 strategy config file name (from conf/scripts/).")
+        self.add_argument("--config-password", "-p",
                           type=str,
                           required=False,
-                          help="Specify the password to unlock your encrypted files and wallets.")
+                          help="Specify the password to unlock your encrypted files.")
         self.add_argument("--auto-set-permissions",
                           type=str,
                           required=False,
                           help="Try to automatically set config / logs / data dir permissions, "
                                "useful for Docker containers.")
+        self.add_argument("--headless",
+                          type=bool,
+                          nargs='?',
+                          const=True,
+                          default=None,
+                          help="Run in headless mode without CLI interface.")
 
 
-def autofix_permissions(user_group_spec: str):
-    project_home: str = os.path.realpath(os.path.join(__file__, "../../"))
-    subprocess.run(f"cd '{project_home}' && "
-                   f"sudo chown -R {user_group_spec} conf/ data/ logs/", capture_output=True, shell=True)
-
-
-async def quick_start(args):
-    config_file_name = args.config_file_name
-    wallet = args.wallet
-    password = args.config_password
+async def quick_start(args: argparse.Namespace, secrets_manager: BaseSecretsManager):
+    """Start Hummingbot using unified HummingbotApplication in either UI or headless mode."""
+    client_config_map = load_client_config_map_from_file()
 
     if args.auto_set_permissions is not None:
         autofix_permissions(args.auto_set_permissions)
 
-    if password is not None and not Security.login(password):
-        logging.getLogger().error("Invalid password.")
+    # Shared boot (login, yml, basic logging, system configs, paper-trade, build app). Logging is
+    # re-initialized later in run_application with the strategy file name. MQTT autostarts only headless.
+    hb = await bootstrap_application(client_config_map, secrets_manager,
+                                     headless=args.headless, mqtt_autostart=args.headless)
+    if hb is None:
         return
 
-    await Security.wait_til_decryption_done()
-    await create_yml_files()
-    init_logging("hummingbot_logs.yml")
-    await read_system_configs_from_yml()
+    # Load and start strategy if provided
+    if args.v2_conf is not None or args.config_file_name is not None:
+        success = await load_and_start_strategy(
+            hb,
+            config_file_name=args.config_file_name,
+            v2_conf=args.v2_conf,
+            headless=bool(args.headless),
+        )
+        if not success:
+            logging.getLogger().error("Failed to load strategy. Exiting.")
+            raise SystemExit(1)
 
-    hb = HummingbotApplication.main_application()
-    # Todo: validate strategy and config_file_name before assinging
+    await wait_for_gateway_ready(hb)
 
-    if config_file_name is not None:
-        hb.strategy_file_name = config_file_name
-        hb.strategy_name = await update_strategy_config_map_from_file(os.path.join(CONF_FILE_PATH, config_file_name))
+    # Run the application
+    await run_application(hb, args, client_config_map)
 
-    # To ensure quickstart runs with the default value of False for kill_switch_enabled if not present
-    if not global_config_map.get("kill_switch_enabled"):
-        global_config_map.get("kill_switch_enabled").value = False
 
-    if wallet and password:
-        global_config_map.get("ethereum_wallet").value = wallet
-
-    if hb.strategy_name and hb.strategy_file_name:
-        if not all_configs_complete(hb.strategy_name):
-            hb.status()
-
-    with patch_stdout(log_field=hb.app.log_field):
-        dev_mode = check_dev_mode()
-        if dev_mode:
-            hb.app.log("Running from dev branches. Full remote logging will be enabled.")
-
-        log_level = global_config_map.get("log_level").value
-        init_logging("hummingbot_logs.yml",
-                     override_log_level=log_level,
-                     dev_mode=dev_mode)
-
-        if hb.strategy_file_name is not None and hb.strategy_name is not None:
-            await write_config_to_yml(hb.strategy_name, hb.strategy_file_name)
-            hb.start(log_level)
+async def run_application(hb: HummingbotApplication, args: argparse.Namespace, client_config_map):
+    """Run the application in headless or UI mode."""
+    if args.headless:
+        # Re-initialize logging with proper strategy file name for headless mode
+        log_file_name = hb.strategy_file_name.split(".")[0] if hb.strategy_file_name else "hummingbot"
+        init_logging("hummingbot_logs.yml", hb.client_config_map,
+                     override_log_level=hb.client_config_map.log_level,
+                     strategy_file_path=log_file_name)
+        await hb.run()
+    else:
+        # Set up UI mode with start listener
+        start_listener: UIStartListener = UIStartListener(
+            hb,
+            is_script=args.v2_conf is not None,
+            script_config=getattr(hb, 'script_config', None),
+            is_quickstart=True
+        )
+        hb.app.add_listener(HummingbotUIEvent.Start, start_listener)
 
         tasks: List[Coroutine] = [hb.run()]
-        if global_config_map.get("debug_console").value:
+        if client_config_map.debug_console:
             management_port: int = detect_available_port(8211)
             tasks.append(start_management_console(locals(), host="localhost", port=management_port))
+
         await safe_gather(*tasks)
 
 
@@ -127,17 +122,33 @@ def main():
     # variable.
     if args.config_file_name is None and len(os.environ.get("CONFIG_FILE_NAME", "")) > 0:
         args.config_file_name = os.environ["CONFIG_FILE_NAME"]
-    if args.wallet is None and len(os.environ.get("WALLET", "")) > 0:
-        args.wallet = os.environ["WALLET"]
+
+    if args.v2_conf is None and len(os.environ.get("SCRIPT_CONFIG", "")) > 0:
+        args.v2_conf = os.environ["SCRIPT_CONFIG"]
+
     if args.config_password is None and len(os.environ.get("CONFIG_PASSWORD", "")) > 0:
         args.config_password = os.environ["CONFIG_PASSWORD"]
 
-    # If no password is given from the command line, prompt for one.
-    if args.config_password is None:
-        if not login_prompt():
-            return
+    if args.headless is None and len(os.environ.get("HEADLESS_MODE", "")) > 0:
+        args.headless = os.environ["HEADLESS_MODE"].lower() == "true"
 
-    asyncio.get_event_loop().run_until_complete(quick_start(args))
+    # If no password is given from the command line, prompt for one.
+    secrets_manager_cls = ETHKeyFileSecretManger
+    client_config_map = load_client_config_map_from_file()
+    if args.config_password is None:
+        secrets_manager = login_prompt(secrets_manager_cls, style=load_style(client_config_map))
+        if not secrets_manager:
+            return
+    else:
+        secrets_manager = secrets_manager_cls(args.config_password)
+
+    try:
+        ev_loop: asyncio.AbstractEventLoop = asyncio.get_running_loop()
+    except RuntimeError:
+        ev_loop: asyncio.AbstractEventLoop = asyncio.new_event_loop()
+        asyncio.set_event_loop(ev_loop)
+
+    ev_loop.run_until_complete(quick_start(args, secrets_manager))
 
 
 if __name__ == "__main__":

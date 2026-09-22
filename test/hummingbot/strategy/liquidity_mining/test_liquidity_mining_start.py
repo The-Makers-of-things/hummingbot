@@ -1,14 +1,16 @@
 from decimal import Decimal
-import unittest.mock
+from test.hummingbot.strategy import assign_config_default
+from test.isolated_asyncio_wrapper_test_case import IsolatedAsyncioWrapperTestCase
+
 import hummingbot.strategy.liquidity_mining.start as strategy_start
+from hummingbot.client.config.client_config_map import ClientConfigMap
 from hummingbot.connector.exchange_base import ExchangeBase
 from hummingbot.strategy.liquidity_mining.liquidity_mining_config_map import (
-    liquidity_mining_config_map as strategy_cmap
+    liquidity_mining_config_map as strategy_cmap,
 )
-from test.hummingbot.strategy import assign_config_default
 
 
-class LiquidityMiningStartTest(unittest.TestCase):
+class LiquidityMiningStartTest(IsolatedAsyncioWrapperTestCase):
 
     def setUp(self) -> None:
         super().setUp()
@@ -33,11 +35,12 @@ class LiquidityMiningStartTest(unittest.TestCase):
         strategy_cmap.get("volatility_to_spread_multiplier").value = Decimal("1.1")
         strategy_cmap.get("max_spread").value = Decimal("4")
         strategy_cmap.get("max_order_age").value = 300.
+        self.client_config_map = ClientConfigMap()
 
     def _initialize_market_assets(self, market, trading_pairs):
         return [("ETH", "USDT")]
 
-    def _initialize_markets(self, market_names):
+    async def initialize_markets(self, market_names):
         pass
 
     def _notify(self, message):
@@ -49,8 +52,8 @@ class LiquidityMiningStartTest(unittest.TestCase):
     def error(self, message, exc_info):
         self.log_errors.append(message)
 
-    def test_strategy_creation(self):
-        strategy_start.start(self)
+    async def test_strategy_creation(self):
+        await strategy_start.start(self)
         self.assertEqual(self.strategy._order_amount, Decimal("1"))
         self.assertEqual(self.strategy._spread, Decimal("0.02"))
 

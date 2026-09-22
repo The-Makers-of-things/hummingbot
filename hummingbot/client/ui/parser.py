@@ -1,10 +1,11 @@
 import argparse
-from typing import (
-    List,
-)
-from hummingbot.exceptions import ArgumentParserError
+from typing import TYPE_CHECKING, List
+
 from hummingbot.client.command.connect_command import OPTIONS as CONNECT_OPTIONS
-from hummingbot.client.config.global_config_map import global_config_map
+from hummingbot.exceptions import ArgumentParserError
+
+if TYPE_CHECKING:
+    from hummingbot.client.hummingbot_application import HummingbotApplication
 
 
 class ThrowingArgumentParser(argparse.ArgumentParser):
@@ -32,11 +33,11 @@ class ThrowingArgumentParser(argparse.ArgumentParser):
         if parser is None:
             return []
         subcommands = parser._optionals._option_string_actions.keys()
-        filtered = list(filter(lambda sub: sub.startswith("--") and sub != "--help", subcommands))
+        filtered = list(filter(lambda sub: sub.startswith("--"), subcommands))
         return filtered
 
 
-def load_parser(hummingbot) -> ThrowingArgumentParser:
+def load_parser(hummingbot: "HummingbotApplication", command_tabs) -> ThrowingArgumentParser:
     parser = ThrowingArgumentParser(prog="", add_help=False)
     subparsers = parser.add_subparsers()
 
@@ -45,7 +46,8 @@ def load_parser(hummingbot) -> ThrowingArgumentParser:
     connect_parser.set_defaults(func=hummingbot.connect)
 
     create_parser = subparsers.add_parser("create", help="Create a new bot")
-    create_parser.add_argument("file_name", nargs="?", default=None, help="Name of the configuration file")
+    create_parser.add_argument("--v2-config", dest="script_to_config", nargs="?", default=None, help="Name of the v2 strategy (from conf/scripts/)")
+    create_parser.add_argument("--controller-config", dest="controller_name", nargs="?", default=None, help="Name of the controller")
     create_parser.set_defaults(func=hummingbot.create)
 
     import_parser = subparsers.add_parser("import", help="Import an existing bot by loading the configuration file")
@@ -68,35 +70,13 @@ def load_parser(hummingbot) -> ThrowingArgumentParser:
     config_parser.set_defaults(func=hummingbot.config)
 
     start_parser = subparsers.add_parser("start", help="Start the current bot")
-    start_parser.add_argument("--restore", default=False, action="store_true", dest="restore", help="Restore and maintain any active orders.")
-    # start_parser.add_argument("--log-level", help="Level of logging")
+    start_parser.add_argument("--v2", type=str, dest="v2_conf",
+                              help="V2 strategy config file name (from conf/scripts/)")
+
     start_parser.set_defaults(func=hummingbot.start)
 
     stop_parser = subparsers.add_parser('stop', help="Stop the current bot")
     stop_parser.set_defaults(func=hummingbot.stop)
-
-    open_orders_parser = subparsers.add_parser('open_orders', help="Show all active open orders")
-    open_orders_parser.add_argument("-f", "--full_report", default=False, action="store_true",
-                                    dest="full_report", help="Show full report with size comparison")
-    open_orders_parser.set_defaults(func=hummingbot.open_orders)
-
-    trades_parser = subparsers.add_parser('trades', help="Show trades")
-    trades_parser.add_argument("-d", "--days", type=float, default=1., dest="days",
-                               help="How many days in the past (can be decimal value)")
-    trades_parser.add_argument("-m", "--market", default=None,
-                               dest="market", help="The market you want to see trades.")
-    trades_parser.add_argument("-o", "--open_order_markets", default=False, action="store_true",
-                               dest="open_order_markets", help="See trades from current open order markets.")
-    trades_parser.set_defaults(func=hummingbot.trades)
-
-    pnl_parser = subparsers.add_parser('pnl', help="Show profits and losses")
-    pnl_parser.add_argument("-d", "--days", type=float, default=1., dest="days",
-                            help="How many days in the past (can be decimal value)")
-    pnl_parser.add_argument("-m", "--market", default=None,
-                            dest="market", help="The market you want to see trades.")
-    pnl_parser.add_argument("-o", "--open_order_markets", default=False, action="store_true",
-                            dest="open_order_markets", help="See PnL from current open order markets.")
-    pnl_parser.set_defaults(func=hummingbot.pnl)
 
     status_parser = subparsers.add_parser("status", help="Get the market status of the current bot")
     status_parser.add_argument("--live", default=False, action="store_true", dest="live", help="Show status updates")
@@ -111,30 +91,57 @@ def load_parser(hummingbot) -> ThrowingArgumentParser:
                                 dest="precision", help="Level of precions for values displayed")
     history_parser.set_defaults(func=hummingbot.history)
 
-    gateway_parser = subparsers.add_parser("gateway", help="Gateway API configurations")
-    gateway_parser.add_argument("option", nargs="?", choices=("update", "list-configs", "generate_certs"), help="Gateway configuration choices")
-    gateway_parser.add_argument("key", nargs="?", default=None, help="Name of the parameter you want to change")
-    gateway_parser.add_argument("value", nargs="?", default=None, help="New value for the parameter")
+    lphistory_parser = subparsers.add_parser("lphistory", help="See LP position history and performance")
+    lphistory_parser.add_argument("-d", "--days", type=float, default=0, dest="days",
+                                  help="How many days in the past (can be decimal value)")
+    lphistory_parser.add_argument("-v", "--verbose", action="store_true", default=False,
+                                  dest="verbose", help="List all LP position updates")
+    lphistory_parser.add_argument("-p", "--precision", default=None, type=int,
+                                  dest="precision", help="Level of precision for values displayed")
+    lphistory_parser.set_defaults(func=hummingbot.lphistory)
+
+    gateway_parser = subparsers.add_parser("gateway", help="Test Gateway node and chain/network status")
     gateway_parser.set_defaults(func=hummingbot.gateway)
+    gateway_subparsers = gateway_parser.add_subparsers()
+
+    gateway_allowance_parser = gateway_subparsers.add_parser("allowance", help="Check token allowances for ethereum connectors")
+    gateway_allowance_parser.add_argument("connector", nargs="?", default=None, help="Ethereum connector name/type (e.g., uniswap/amm)")
+    gateway_allowance_parser.set_defaults(func=hummingbot.gateway_allowance)
+
+    gateway_approve_parser = gateway_subparsers.add_parser("approve", help="Approve token for use with ethereum connectors")
+    gateway_approve_parser.add_argument("connector", nargs="?", default=None, help="Connector name/type (e.g., jupiter/router)")
+    gateway_approve_parser.add_argument("token", nargs="?", default=None, help="Token symbol to approve (e.g., WETH)")
+    gateway_approve_parser.set_defaults(func=hummingbot.gateway_approve)
+
+    gateway_balance_parser = gateway_subparsers.add_parser("balance", help="Check token balances")
+    gateway_balance_parser.add_argument("chain", nargs="?", default=None, help="Chain name (e.g., ethereum, solana)")
+    gateway_balance_parser.add_argument("tokens", nargs="?", default=None, help="Comma-separated list of tokens to check (optional)")
+    gateway_balance_parser.set_defaults(func=hummingbot.gateway_balance)
+
+    gateway_config_parser = gateway_subparsers.add_parser("config", help="Show or update configuration")
+    gateway_config_parser.add_argument("namespace", nargs="?", default=None, help="Namespace (e.g., ethereum-mainnet, uniswap)")
+    gateway_config_parser.add_argument("action", nargs="?", default=None, help="Action to perform (update)")
+    gateway_config_parser.add_argument("args", nargs="*", help="Additional arguments: <path> <value> for direct update")
+    gateway_config_parser.set_defaults(func=hummingbot.gateway_config)
+
+    gateway_connect_parser = gateway_subparsers.add_parser("connect", help="Add a wallet for a chain")
+    gateway_connect_parser.add_argument("chain", nargs="?", default=None, help="Blockchain chain (e.g., ethereum, solana)")
+    gateway_connect_parser.set_defaults(func=hummingbot.gateway_connect)
+
+    gateway_cert_parser = gateway_subparsers.add_parser("generate-certs", help="Create SSL certificate")
+    gateway_cert_parser.set_defaults(func=hummingbot.generate_certs)
+
+    gateway_list_parser = gateway_subparsers.add_parser("list", help="List available connectors")
+    gateway_list_parser.set_defaults(func=hummingbot.gateway_list)
 
     exit_parser = subparsers.add_parser("exit", help="Exit and cancel all outstanding orders")
-    exit_parser.add_argument("-f", "--force", "--suspend", action="store_true", help="Force exit without cancelling outstanding orders",
+    exit_parser.add_argument("-f", "--force", action="store_true", help="Force exit without canceling outstanding orders",
                              default=False)
     exit_parser.set_defaults(func=hummingbot.exit)
-
-    paper_trade_parser = subparsers.add_parser("paper_trade", help="Toggle paper trade mode on and off")
-    paper_trade_parser.set_defaults(func=hummingbot.paper_trade)
 
     export_parser = subparsers.add_parser("export", help="Export secure information")
     export_parser.add_argument("option", nargs="?", choices=("keys", "trades"), help="Export choices")
     export_parser.set_defaults(func=hummingbot.export)
-
-    order_book_parser = subparsers.add_parser("order_book", help="Display current order book")
-    order_book_parser.add_argument("--lines", type=int, default=5, dest="lines", help="Number of lines to display")
-    order_book_parser.add_argument("--exchange", type=str, dest="exchange", help="The exchange of the market")
-    order_book_parser.add_argument("--market", type=str, dest="market", help="The market (trading pair) of the order book")
-    order_book_parser.add_argument("--live", default=False, action="store_true", dest="live", help="Show order book updates")
-    order_book_parser.set_defaults(func=hummingbot.order_book)
 
     ticker_parser = subparsers.add_parser("ticker", help="Show market ticker of current order book")
     ticker_parser.add_argument("--live", default=False, action="store_true", dest="live", help="Show ticker updates")
@@ -142,27 +149,43 @@ def load_parser(hummingbot) -> ThrowingArgumentParser:
     ticker_parser.add_argument("--market", type=str, dest="market", help="The market (trading pair) of the order book")
     ticker_parser.set_defaults(func=hummingbot.ticker)
 
-    script_parser = subparsers.add_parser("script", help="Send command to running script instance")
-    script_parser.add_argument("cmd", nargs="?", default=None, help="Command")
-    script_parser.add_argument("args", nargs="*", default=None, help="Arguments")
-    script_parser.set_defaults(func=hummingbot.script_command)
-
-    # add shortcuts so they appear in command help
-    shortcuts = global_config_map.get("command_shortcuts").value
-    if shortcuts is not None:
-        for shortcut in shortcuts:
-            help_str = shortcut['help']
-            command = shortcut['command']
-            shortcut_parser = subparsers.add_parser(command, help=help_str)
-            args = shortcut['arguments']
-            for i in range(len(args)):
-                shortcut_parser.add_argument(f'${i+1}', help=args[i])
+    mqtt_parser = subparsers.add_parser("mqtt", help="Manage the MQTT broker bridge")
+    mqtt_subparsers = mqtt_parser.add_subparsers()
+    mqtt_start_parser = mqtt_subparsers.add_parser("start", help="Start the MQTT broker bridge")
+    mqtt_start_parser.add_argument(
+        "-t",
+        "--timeout",
+        default=30.0,
+        type=float,
+        dest="timeout",
+        help="Bridge connection timeout"
+    )
+    mqtt_start_parser.set_defaults(func=hummingbot.mqtt_start)
+    mqtt_stop_parser = mqtt_subparsers.add_parser("stop", help="Stop the MQTT Bridge")
+    mqtt_stop_parser.set_defaults(func=hummingbot.mqtt_stop)
+    mqtt_restart_parser = mqtt_subparsers.add_parser("restart", help="Restart the MQTT Bridge")
+    mqtt_restart_parser.add_argument(
+        "-t",
+        "--timeout",
+        default=30.0,
+        type=float,
+        dest="timeout",
+        help="Bridge connection timeout"
+    )
+    mqtt_restart_parser.set_defaults(func=hummingbot.mqtt_restart)
 
     rate_parser = subparsers.add_parser('rate', help="Show rate of a given trading pair")
     rate_parser.add_argument("-p", "--pair", default=None,
-                             dest="pair", help="The market trading pair you want to see rate.")
+                             dest="pair", help="The market trading pair for which you want to get a rate.")
     rate_parser.add_argument("-t", "--token", default=None,
-                             dest="token", help="The token you want to see its value.")
+                             dest="token", help="The token who's value you want to get.")
     rate_parser.set_defaults(func=hummingbot.rate)
+
+    for name, command_tab in command_tabs.items():
+        o_parser = subparsers.add_parser(name, help=command_tab.tab_class.get_command_help_message())
+        for arg_name, arg_properties in command_tab.tab_class.get_command_arguments().items():
+            o_parser.add_argument(arg_name, **arg_properties)
+        o_parser.add_argument("-c", "--close", default=False, action="store_true", dest="close",
+                              help=f"To close the {name} tab.")
 
     return parser
